@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Contract Source Viewer
-// @version     1.0.0
+// @version     1.0.1
 // @description View contract source code on deth
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -17,11 +17,14 @@
 
 const showViewSourceButton = function () {
   const dethUrl = window.location.href.replace(".io", ".deth.net");
-  const nav = document.querySelector("#content .container div div.d-flex");
+  console.log("dest url", dethUrl);
+  const nodes = document
+    .querySelector("#content .container-xxl .flex-wrap")
+    .querySelectorAll("div.d-flex");
+  const nav = nodes[nodes.length - 1];
   const div = document.createElement("div");
-  div.className = "position-relative mb-2 mb-sm-0 mr-2";
-  div.innerHTML = `<a href="${dethUrl}" class="btn btn-xs btn-dark">View Source</a>`;
-  nav.insertBefore(div, nav.firstChild);
+  div.innerHTML = `<a href="${dethUrl}" class="btn btn-sm btn-dark">View Source</a>`;
+  nav.insertBefore(div, null);
 };
 
 showViewSourceButton();
