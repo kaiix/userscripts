@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.0.0
+// @version     1.1.0
 // @description Search missing movie/tv for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
 // @license     MIT
 // @match       *://search.douban.com/movie/*
+// @match       *://*.douban.com/search*
 // @grant       GM.xmlHttpRequest
 // @icon        https://www.google.com/s2/favicons?sz=64&domain=neodb.social
 // @updateURL   https://raw.githubusercontent.com/kaiix/userscripts/main/douban-neodb.user.js
@@ -67,7 +68,6 @@ function createItem(item) {
     parseInt((parseInt(rating * 10) % 10) / 5) * 5;
 
   const el = document.createElement("div");
-  el.classList = "sc-dnqmqq ksdtVX";
   // TODO: clone node or rewrite style
   el.innerHTML = `
   <div class="sc-bZQynM sc-bxivhb eJWSlY">
@@ -96,23 +96,31 @@ function createItem(item) {
 
 (function () {
   "use strict";
-  // https://search.douban.com/movie/subject_search?search_text=%E8%AF%B7%E5%9B%9E%E7%AD%94&cat=1002
+  let sidebar, query;
   const searchParams = new URLSearchParams(location.search);
+  console.log("location.pathname", location.pathname);
+  if (location.pathname === "/search") {
+    sidebar = document.querySelector("#content .aside");
+    query = searchParams.get("q");
+  } else {
+    sidebar = document.querySelector(
+      'a[href=" https://www.douban.com/opensearch?description"]'
+    ).parentNode.parentNode;
+    query = searchParams.get("search_text");
+  }
+
+  if (!query) {
+    return;
+  }
+
   // const searchResult = document.querySelector("#root > div :nth-child(2)");
-  const sidebar = document.querySelector(
-    'a[href=" https://www.douban.com/opensearch?description"]'
-  ).parentNode.parentNode;
+  // https://search.douban.com/movie/subject_search?search_text=%E8%AF%B7%E5%9B%9E%E7%AD%94&cat=1002
   const section = sidebar.firstElementChild.cloneNode(false);
   section.classList.add("gray_ad");
   sidebar.insertBefore(section, sidebar.firstChild);
-  searchNeoDB(
-    searchParams.get("search_text"),
-    ["tv", "movie"],
-    function (items) {
-      items.forEach((item) => {
-        // searchResult.insertBefore(createItem(item), searchResult.firstChild);
-        section.appendChild(createItem(item));
-      });
-    }
-  );
+  searchNeoDB(query, ["tv", "movie"], function (items) {
+    items.forEach((item) => {
+      section.appendChild(createItem(item));
+    });
+  });
 })();
