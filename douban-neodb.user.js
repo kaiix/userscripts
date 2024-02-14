@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.2.0
+// @version     1.2.1
 // @description Search missing movie/tv for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -220,8 +220,10 @@ function createItem(item) {
           userSidebar.appendChild(createItem(item));
         });
       } else {
-        loading.innerHTML = "未检索到其他资源";
-        loading.classList.remove("hidden");
+        const showMore = document.createElement("div");
+        showMore.classList.add("user-loading");
+        showMore.innerHTML = `未检索到其他资源&nbsp;<a href="https://neodb.social/search?q=${query}" target="_blank">查看更多</a>`;
+        userSidebar.appendChild(showMore);
       }
     },
   });
