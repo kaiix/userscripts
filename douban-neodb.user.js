@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.1.0
+// @version     1.2.0
 // @description Search missing movie/tv for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -96,7 +96,7 @@ const userStyle = `
 }
 `;
 
-function searchNeoDB(query, categories, callback) {
+function searchNeoDB({ query, categories, callback }) {
   GM.xmlHttpRequest({
     method: "GET",
     url: `https://neodb.social/api/catalog/search?query=${query}`,
@@ -106,13 +106,6 @@ function searchNeoDB(query, categories, callback) {
       if (categories.length > 0) {
         items = items.filter((item) => categories.includes(item.category));
       }
-      items = items.filter((item) => {
-        const resources = item.external_resources;
-        const exists = resources.filter((resource) =>
-          resource.url.includes("douban.com")
-        );
-        return exists.length === 0;
-      });
       callback(items);
     },
   });
@@ -195,7 +188,8 @@ function createItem(item) {
 
   GM.addStyle(userStyle);
 
-  // const searchResult = document.querySelector("#root > div :nth-child(2)");
+  const searchResult = document.querySelector("#root > div :nth-child(2)");
+  const originItems = searchResult.querySelectorAll(".item-root");
   const userSidebar = document.createElement("div");
   userSidebar.classList.add("user-aside");
   const loading = document.createElement("div");
@@ -203,10 +197,32 @@ function createItem(item) {
   loading.classList.add("user-loading");
   userSidebar.appendChild(loading);
   sidebar.insertBefore(userSidebar, sidebar.firstChild);
-  searchNeoDB(query, ["tv", "movie"], function (items) {
-    loading.classList.add("hidden");
-    items.forEach((item) => {
-      userSidebar.appendChild(createItem(item));
-    });
+
+  searchNeoDB({
+    query,
+    categories: ["tv", "movie"],
+    callback: function (items) {
+      loading.classList.add("hidden");
+
+      if (originItems.length > 0) {
+        // filter out items exists in the douban
+        items = items.filter((item) => {
+          const resources = item.external_resources;
+          const exists = resources.filter((resource) => {
+            return resource.url.includes("douban.com");
+          });
+          return exists.length === 0;
+        });
+      }
+
+      if (items.length > 0) {
+        items.forEach((item) => {
+          userSidebar.appendChild(createItem(item));
+        });
+      } else {
+        loading.innerHTML = "未检索到其他资源";
+        loading.classList.remove("hidden");
+      }
+    },
   });
 })();
