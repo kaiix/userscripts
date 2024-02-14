@@ -23,6 +23,16 @@ const userStyle = `
     word-wrap: break-word;
 }
 
+.user-aside .user-loading {
+    color: #999;
+    display: flex;
+    justify-content: center;
+}
+
+.user-aside .user-loading.hidden {
+    display: none;
+}
+
 .user-item-wrapper {
     margin-bottom: 30px;
 }
@@ -188,8 +198,13 @@ function createItem(item) {
   // const searchResult = document.querySelector("#root > div :nth-child(2)");
   const userSidebar = document.createElement("div");
   userSidebar.classList.add("user-aside");
+  const loading = document.createElement("div");
+  loading.innerHTML = "加载中...";
+  loading.classList.add("user-loading");
+  userSidebar.appendChild(loading);
   sidebar.insertBefore(userSidebar, sidebar.firstChild);
   searchNeoDB(query, ["tv", "movie"], function (items) {
+    loading.classList.add("hidden");
     items.forEach((item) => {
       userSidebar.appendChild(createItem(item));
     });
