@@ -8,11 +8,83 @@
 // @match       *://search.douban.com/movie/*
 // @match       *://*.douban.com/search*
 // @grant       GM.xmlHttpRequest
+// @grant       GM.addStyle
 // @icon        https://www.google.com/s2/favicons?sz=64&domain=neodb.social
 // @updateURL   https://raw.githubusercontent.com/kaiix/userscripts/main/douban-neodb.user.js
 // @downloadURL https://raw.githubusercontent.com/kaiix/userscripts/main/douban-neodb.user.js
 // @supportURL  https://github.com/kaiix/userscripts/issues
 // ==/UserScript==
+
+const userStyle = `
+.user-aside {
+    margin-bottom: 25px;
+    background: #F4F4EC;
+    padding: 10px;
+    word-wrap: break-word;
+}
+
+.user-item-wrapper {
+    margin-bottom: 30px;
+}
+
+.user-item-wrapper:last-child {
+    margin-bottom: 0;
+}
+
+.user-item-wrapper .item-root {
+    display: flex;
+    flex-wrap: wrap;
+    position: relative;
+    justify-content: space-between;
+}
+
+.user-item-wrapper .cover-link {
+    background: none;
+    width: 65px;
+    max-height: 97px;
+    margin-right: 15px;
+}
+
+.user-item-wrapper .cover {
+    width: 65px;
+    max-height: 97px;
+}
+
+.user-item-wrapper .detail {
+    flex: 1;
+    min-width: 0;
+}
+
+.user-item-wrapper .detail .title {
+    font-size: 14px;
+    font-weight: 500;
+    overflow: visible;
+    position: relative;
+    top: -1px;
+    color: #007722;
+}
+
+.user-item-wrapper .detail .label {
+    height: 12px;
+    font-size: 12px;
+    margin-left: 5px;
+}
+
+.user-item-wrapper .detail .meta {
+    margin-top: 7px;
+    color: #999;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow: visible;
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    word-wrap: normal;
+    display: block;
+}
+`;
 
 function searchNeoDB(query, categories, callback) {
   GM.xmlHttpRequest({
@@ -68,27 +140,25 @@ function createItem(item) {
     parseInt((parseInt(rating * 10) % 10) / 5) * 5;
 
   const el = document.createElement("div");
-  // TODO: clone node or rewrite style
+  el.classList.add("user-item-wrapper");
   el.innerHTML = `
-  <div class="sc-bZQynM sc-bxivhb eJWSlY">
   <div class="item-root">
-    <a href="${fullUrl}" target="_blank" data-moreurl="" class="cover-link">
-      <img src="${cover_image_url}" alt="" class="cover" style="width: 65px; max-height: 97px;">
+    <a href="${fullUrl}" target="_blank" class="cover-link">
+      <img src="${cover_image_url}" class="cover">
       </a>
       <div class="detail">
         <div class="title">
           <a href="${fullUrl}" target="_blank" data-moreurl="" class="title-text">${title} (${year})</a>
           <span class="label" style="color: rgb(0, 173, 63);">[${category}]</span>
         </div>
-        <div class="rating sc-bwzfXH hxNRHc">
+        <div class="rating">
           <span class="allstar${starGrade} rating-stars"></span>
           <span class="rating_nums">${rating || ""}</span>
           <span class="pl">(${rating_count}人评价)</span>
         </div>
         <div class="meta abstract">${abstract}</div>
-        <div class="meta abstract_2" style="white-space: nowrap;max-width: 100%;text-overflow:ellipsis;overflow:hidden;word-wrap: normal;display: inline-block;">${abstract2}</div>
+        <div class="meta abstract_2">${abstract2}</div>
       </div>
-    </div>
     </div>
 	`;
   return el;
@@ -113,14 +183,15 @@ function createItem(item) {
     return;
   }
 
+  GM.addStyle(userStyle);
+
   // const searchResult = document.querySelector("#root > div :nth-child(2)");
-  // https://search.douban.com/movie/subject_search?search_text=%E8%AF%B7%E5%9B%9E%E7%AD%94&cat=1002
-  const section = sidebar.firstElementChild.cloneNode(false);
-  section.classList.add("gray_ad");
-  sidebar.insertBefore(section, sidebar.firstChild);
+  const userSidebar = document.createElement("div");
+  userSidebar.classList.add("user-aside");
+  sidebar.insertBefore(userSidebar, sidebar.firstChild);
   searchNeoDB(query, ["tv", "movie"], function (items) {
     items.forEach((item) => {
-      section.appendChild(createItem(item));
+      userSidebar.appendChild(createItem(item));
     });
   });
 })();
