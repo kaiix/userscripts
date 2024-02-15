@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.3.0
+// @version     1.3.1
 // @description Search missing movie/tv/book for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -231,14 +231,18 @@ function createBookItem(item) {
   let sidebar, query;
   const searchParams = new URLSearchParams(location.search);
   console.log("location.pathname", location.pathname);
-  if (location.pathname === "/search") {
-    sidebar = document.querySelector("#content .aside");
-    query = searchParams.get("q");
-  } else {
+
+  const subdomain = location.host.split(".")[0];
+  if (subdomain === "search") {
     sidebar = document.querySelector(
       'a[href=" https://www.douban.com/opensearch?description"]',
     ).parentNode.parentNode;
     query = searchParams.get("search_text");
+  }
+
+  if (subdomain === "www") {
+    sidebar = document.querySelector("#content .aside");
+    query = searchParams.get("q");
   }
 
   if (!query) {
@@ -247,8 +251,20 @@ function createBookItem(item) {
 
   GM.addStyle(userStyle);
 
-  const searchResult = document.querySelector("#root > div :nth-child(2)");
-  const originItems = searchResult.querySelectorAll(".item-root");
+  let categories;
+  if (subdomain === "search") {
+    const subject_category = location.pathname.split("/").filter(Boolean)[0];
+    if (subject_category === "movie") {
+      categories = ["tv", "movie"];
+    } else if (subject_category === "book") {
+      categories = ["book"];
+    } else {
+      categories = [];
+    }
+  } else {
+    categories = ["movie", "tv", "book"];
+  }
+
   const userSidebar = document.createElement("div");
   userSidebar.classList.add("user-aside");
   const loading = document.createElement("div");
@@ -257,15 +273,22 @@ function createBookItem(item) {
   userSidebar.appendChild(loading);
   sidebar.insertBefore(userSidebar, sidebar.firstChild);
 
+  let hasSearchResult = false;
+  if (subdomain === "search") {
+    const searchResult = document.querySelector("#root > div :nth-child(2)");
+    const originItems = searchResult.querySelectorAll(".item-root");
+    hasSearchResult = originItems.length > 0;
+  } else if (subdomain === "www") {
+    hasSearchResult = true;
+  }
+
   const showItems = (items) => {
     loading.classList.add("hidden");
-    console.log(items);
 
-    if (originItems.length > 0) {
+    if (hasSearchResult) {
       // filter out items exists in the douban
       items = items.filter((item) => {
-        const resources = item.external_resources;
-        const exists = resources.filter((resource) => {
+        const exists = item.external_resources.filter((resource) => {
           return resource.url.includes("douban.com");
         });
         return exists.length === 0;
@@ -274,7 +297,6 @@ function createBookItem(item) {
 
     if (items.length > 0) {
       items.forEach((item) => {
-        console.log("add items", item);
         userSidebar.appendChild(createItem(item));
       });
     } else {
@@ -285,16 +307,6 @@ function createBookItem(item) {
     }
   };
 
-  const subject_category = location.pathname.split("/").filter(Boolean)[0];
-  let categories;
-  console.log("subject_category", subject_category);
-  if (subject_category === "movie") {
-    categories = ["tv", "movie"];
-  } else if (subject_category === "book") {
-    categories = ["book"];
-  } else {
-    categories = [];
-  }
   searchNeoDB({
     query,
     categories,
