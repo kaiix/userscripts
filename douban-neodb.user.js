@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.3.1
-// @description Search missing movie/tv/book for douban
+// @version     1.4.0
+// @description Search missing movie/tv/book/music for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
 // @license     MIT
 // @match       *://search.douban.com/movie/*
 // @match       *://search.douban.com/book/*
+// @match       *://search.douban.com/music/*
 // @match       *://*.douban.com/search*
 // @grant       GM.xmlHttpRequest
 // @grant       GM.addStyle
@@ -117,6 +118,8 @@ function createItem(item) {
     return createMovieItem(item);
   } else if (item.category === "book") {
     return createBookItem(item);
+  } else if (item.category === "music") {
+    return createMusicItem(item);
   }
 }
 
@@ -147,32 +150,24 @@ function createMovieItem(item) {
     .flat()
     .filter(Boolean)
     .join(" / ");
-  const starGrade =
+  const star_grade =
     parseInt((parseInt(rating) * 10) / 2) +
     parseInt((parseInt(rating * 10) % 10) / 5) * 5;
 
   const el = document.createElement("div");
   el.classList.add("user-item-wrapper");
-  el.innerHTML = `
-  <div class="item-root">
-    <a href="${fullUrl}" target="_blank" class="cover-link">
-      <img src="${cover_image_url}" class="cover">
-      </a>
-      <div class="detail">
-        <div class="title">
-          <a href="${fullUrl}" target="_blank" data-moreurl="" class="title-text">${title} (${year})</a>
-          <span class="label" style="color: rgb(0, 173, 63);">[${category}]</span>
-        </div>
-        <div class="rating">
-          <span class="allstar${starGrade} rating-stars"></span>
-          <span class="rating_nums">${rating || ""}</span>
-          <span class="pl">(${rating_count}人评价)</span>
-        </div>
-        <div class="meta abstract">${abstract}</div>
-        <div class="meta abstract_2">${abstract2}</div>
-      </div>
-    </div>
-	`;
+  el.innerHTML = formatItemHtml({
+    url: fullUrl,
+    cover_image_url,
+    title,
+    year,
+    category,
+    star_grade,
+    rating,
+    rating_count,
+    abstract,
+    abstract2,
+  });
   return el;
 }
 
@@ -196,25 +191,92 @@ function createBookItem(item) {
     .filter(Boolean)
     .join(" / ");
   const abstract2 = "";
-  const starGrade =
+  const star_grade =
     parseInt((parseInt(rating) * 10) / 2) +
     parseInt((parseInt(rating * 10) % 10) / 5) * 5;
   const year = pub_year;
 
   const el = document.createElement("div");
   el.classList.add("user-item-wrapper");
-  el.innerHTML = `
+  el.innerHTML = formatItemHtml({
+    url: fullUrl,
+    cover_image_url,
+    title,
+    year,
+    category,
+    star_grade,
+    rating,
+    rating_count,
+    abstract,
+    abstract2,
+  });
+  return el;
+}
+
+function createMusicItem(item) {
+  const {
+    url,
+    title,
+    category,
+    cover_image_url,
+    rating,
+    rating_count,
+    artist,
+    genre,
+    release_date,
+  } = item;
+
+  const fullUrl = `https://neodb.social${url}`;
+  const abstract = [artist, release_date, genre]
+    .flat()
+    .filter(Boolean)
+    .join(" / ");
+  const abstract2 = "";
+  const star_grade =
+    parseInt((parseInt(rating) * 10) / 2) +
+    parseInt((parseInt(rating * 10) % 10) / 5) * 5;
+
+  const el = document.createElement("div");
+  el.classList.add("user-item-wrapper");
+  el.innerHTML = formatItemHtml({
+    url: fullUrl,
+    cover_image_url,
+    title,
+    year: undefined,
+    category,
+    star_grade,
+    rating,
+    rating_count,
+    abstract,
+    abstract2,
+  });
+  return el;
+}
+
+function formatItemHtml({
+  url,
+  cover_image_url,
+  title,
+  year,
+  category,
+  star_grade,
+  rating,
+  rating_count,
+  abstract,
+  abstract2,
+}) {
+  return `
   <div class="item-root">
-    <a href="${fullUrl}" target="_blank" class="cover-link">
+    <a href="${url}" target="_blank" class="cover-link">
       <img src="${cover_image_url}" class="cover">
       </a>
       <div class="detail">
         <div class="title">
-          <a href="${fullUrl}" target="_blank" data-moreurl="" class="title-text">${title} (${year})</a>
+          <a href="${url}" target="_blank" data-moreurl="" class="title-text">${title} ${year ? `(${year})` : ""}</a>
           <span class="label" style="color: rgb(0, 173, 63);">[${category}]</span>
         </div>
         <div class="rating">
-          <span class="allstar${starGrade} rating-stars"></span>
+          <span class="allstar${star_grade} rating-stars"></span>
           <span class="rating_nums">${rating || ""}</span>
           <span class="pl">(${rating_count}人评价)</span>
         </div>
@@ -223,14 +285,12 @@ function createBookItem(item) {
       </div>
     </div>
 	`;
-  return el;
 }
 
 (function () {
   "use strict";
   let sidebar, query;
   const searchParams = new URLSearchParams(location.search);
-  console.log("location.pathname", location.pathname);
 
   const subdomain = location.host.split(".")[0];
   if (subdomain === "search") {
@@ -251,18 +311,22 @@ function createBookItem(item) {
 
   GM.addStyle(userStyle);
 
-  let categories;
+  let categories = [];
   if (subdomain === "search") {
     const subject_category = location.pathname.split("/").filter(Boolean)[0];
     if (subject_category === "movie") {
       categories = ["tv", "movie"];
     } else if (subject_category === "book") {
       categories = ["book"];
-    } else {
-      categories = [];
+    } else if (subject_category === "music") {
+      categories = ["music"];
     }
   } else {
-    categories = ["movie", "tv", "book"];
+    categories = ["movie", "tv", "book", "music"];
+  }
+
+  if (categories.length === 0) {
+    return;
   }
 
   const userSidebar = document.createElement("div");
