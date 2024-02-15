@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.2.1
-// @description Search missing movie/tv for douban
+// @version     1.3.0
+// @description Search missing movie/tv/book for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
 // @license     MIT
 // @match       *://search.douban.com/movie/*
+// @match       *://search.douban.com/book/*
 // @match       *://*.douban.com/search*
 // @grant       GM.xmlHttpRequest
 // @grant       GM.addStyle
@@ -112,6 +113,14 @@ function searchNeoDB({ query, categories, callback }) {
 }
 
 function createItem(item) {
+  if (item.category === "movie" || item.category === "tv") {
+    return createMovieItem(item);
+  } else if (item.category === "book") {
+    return createBookItem(item);
+  }
+}
+
+function createMovieItem(item) {
   const {
     url,
     title,
@@ -167,6 +176,56 @@ function createItem(item) {
   return el;
 }
 
+function createBookItem(item) {
+  const {
+    url,
+    title,
+    category,
+    cover_image_url,
+    rating,
+    rating_count,
+    author,
+    pub_house,
+    pub_year,
+    pub_month,
+  } = item;
+
+  const fullUrl = `https://neodb.social${url}`;
+  const abstract = [author, pub_house, `${pub_year}-${pub_month}`]
+    .flat()
+    .filter(Boolean)
+    .join(" / ");
+  const abstract2 = "";
+  const starGrade =
+    parseInt((parseInt(rating) * 10) / 2) +
+    parseInt((parseInt(rating * 10) % 10) / 5) * 5;
+  const year = pub_year;
+
+  const el = document.createElement("div");
+  el.classList.add("user-item-wrapper");
+  el.innerHTML = `
+  <div class="item-root">
+    <a href="${fullUrl}" target="_blank" class="cover-link">
+      <img src="${cover_image_url}" class="cover">
+      </a>
+      <div class="detail">
+        <div class="title">
+          <a href="${fullUrl}" target="_blank" data-moreurl="" class="title-text">${title} (${year})</a>
+          <span class="label" style="color: rgb(0, 173, 63);">[${category}]</span>
+        </div>
+        <div class="rating">
+          <span class="allstar${starGrade} rating-stars"></span>
+          <span class="rating_nums">${rating || ""}</span>
+          <span class="pl">(${rating_count}人评价)</span>
+        </div>
+        <div class="meta abstract">${abstract}</div>
+        <div class="meta abstract_2">${abstract2}</div>
+      </div>
+    </div>
+	`;
+  return el;
+}
+
 (function () {
   "use strict";
   let sidebar, query;
@@ -177,7 +236,7 @@ function createItem(item) {
     query = searchParams.get("q");
   } else {
     sidebar = document.querySelector(
-      'a[href=" https://www.douban.com/opensearch?description"]'
+      'a[href=" https://www.douban.com/opensearch?description"]',
     ).parentNode.parentNode;
     query = searchParams.get("search_text");
   }
@@ -198,33 +257,47 @@ function createItem(item) {
   userSidebar.appendChild(loading);
   sidebar.insertBefore(userSidebar, sidebar.firstChild);
 
+  const showItems = (items) => {
+    loading.classList.add("hidden");
+    console.log(items);
+
+    if (originItems.length > 0) {
+      // filter out items exists in the douban
+      items = items.filter((item) => {
+        const resources = item.external_resources;
+        const exists = resources.filter((resource) => {
+          return resource.url.includes("douban.com");
+        });
+        return exists.length === 0;
+      });
+    }
+
+    if (items.length > 0) {
+      items.forEach((item) => {
+        console.log("add items", item);
+        userSidebar.appendChild(createItem(item));
+      });
+    } else {
+      const showMore = document.createElement("div");
+      showMore.classList.add("user-loading");
+      showMore.innerHTML = `未检索到其他资源&nbsp;<a href="https://neodb.social/search?q=${query}" target="_blank">查看更多</a>`;
+      userSidebar.appendChild(showMore);
+    }
+  };
+
+  const subject_category = location.pathname.split("/").filter(Boolean)[0];
+  let categories;
+  console.log("subject_category", subject_category);
+  if (subject_category === "movie") {
+    categories = ["tv", "movie"];
+  } else if (subject_category === "book") {
+    categories = ["book"];
+  } else {
+    categories = [];
+  }
   searchNeoDB({
     query,
-    categories: ["tv", "movie"],
-    callback: function (items) {
-      loading.classList.add("hidden");
-
-      if (originItems.length > 0) {
-        // filter out items exists in the douban
-        items = items.filter((item) => {
-          const resources = item.external_resources;
-          const exists = resources.filter((resource) => {
-            return resource.url.includes("douban.com");
-          });
-          return exists.length === 0;
-        });
-      }
-
-      if (items.length > 0) {
-        items.forEach((item) => {
-          userSidebar.appendChild(createItem(item));
-        });
-      } else {
-        const showMore = document.createElement("div");
-        showMore.classList.add("user-loading");
-        showMore.innerHTML = `未检索到其他资源&nbsp;<a href="https://neodb.social/search?q=${query}" target="_blank">查看更多</a>`;
-        userSidebar.appendChild(showMore);
-      }
-    },
+    categories,
+    callback: showItems,
   });
 })();
