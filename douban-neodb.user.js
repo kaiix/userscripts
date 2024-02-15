@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        NeoDB for Douban
-// @version     1.4.0
+// @version     1.5.0
 // @description Search missing movie/tv/book/music for douban
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -294,15 +294,28 @@ function formatItemHtml({
 
   const subdomain = location.host.split(".")[0];
   if (subdomain === "search") {
+    query = searchParams.get("search_text");
     sidebar = document.querySelector(
       'a[href=" https://www.douban.com/opensearch?description"]',
     ).parentNode.parentNode;
-    query = searchParams.get("search_text");
   }
 
+  // 403 forbidden
+  // 根据相关法律法规和政策，搜索结果未予显示。请尝试其他查询词。
+  let isCensored = false;
   if (subdomain === "www") {
-    sidebar = document.querySelector("#content .aside");
     query = searchParams.get("q");
+    sidebar = document.querySelector("#content .aside");
+    if (!sidebar) {
+      const isError = document.querySelector("title").text == "error";
+      const errMsg = document.querySelector(
+        '#wrapper img[src="/pics/douban_error.gif"]',
+      )?.nextElementSibling?.textContent;
+      if (isError && errMsg.includes("搜索结果未予显示")) {
+        sidebar = document.querySelector("#wrapper");
+        isCensored = true;
+      }
+    }
   }
 
   if (!query) {
@@ -343,7 +356,7 @@ function formatItemHtml({
     const originItems = searchResult.querySelectorAll(".item-root");
     hasSearchResult = originItems.length > 0;
   } else if (subdomain === "www") {
-    hasSearchResult = true;
+    hasSearchResult = !isCensored;
   }
 
   const showItems = (items) => {
