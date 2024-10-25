@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Douban to WeRead
-// @version      1.1.0
+// @version      1.1.1
 // @description  Add books from Douban to WeRead library
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -22,6 +22,7 @@
   const WEREAD_SEARCH_URL = "https://weread.qq.com/api/store/search";
   const WEREAD_ADD_BOOK_URL = "https://weread.qq.com/mp/shelf/addToShelf";
   const WEREAD_BOOK_URL_PREFIX = "https://weread.qq.com/web/reader/";
+  const WEREAD_SHELF_STATUS_URL = "https://weread.qq.com/web/shelf/bookIds";
   const WEREAD_SEARCH_COUNT = 1;
 
   function debugLog(...args) {
@@ -116,30 +117,41 @@
       let html = '<ul style="list-style-type: none; padding: 0;">';
       books.forEach((book) => {
         const bookInfo = book.bookInfo;
-        const readerUrl = `${WEREAD_BOOK_URL_PREFIX}${getBookHash(
-          bookInfo.bookId
-        )}`;
-        const isInShelf = shelfStatus[bookInfo.bookId];
         const isPending = book.subscribeCount > 0;
+        const isLoggedIn = shelfStatus !== null;
+        const isInShelf = isLoggedIn && shelfStatus[bookInfo.bookId];
+        const readerUrl =
+          `${WEREAD_BOOK_URL_PREFIX}${getBookHash(bookInfo.bookId)}` +
+          (isPending ? "#outline?noScroll=1" : "");
+
         html += `
-          <li style="margin-bottom: 10px;">
-            <img src="${bookInfo.cover}" alt="${
+          <li style="margin-bottom: 10px; display: flex;">
+            <div style="flex: 0 0 60px; margin-right: 10px;">
+              <img src="${bookInfo.cover}" alt="${
           bookInfo.title
-        }" style="width: 60px; float: left; margin-right: 10px;">
-            <div>
-              <strong><a href="${
-                !isPending ? readerUrl : readerUrl + "#outline?noScroll=1"
-              }" target="_blank">${bookInfo.title}</a></strong><br>
-              ${bookInfo.author}<br>
-              ${
-                isPending
-                  ? '<span style="color: #eb9108;">待上架</span>'
-                  : isInShelf
-                  ? '<span style="color: green;">已在书架中</span>'
-                  : `<button class="add-to-weread" style="padding:0 2px;" data-bookid="${bookInfo.bookId}">添加到书架</button>`
-              }
+        }" style="width: 60px;">
             </div>
-            <div style="clear: both;"></div>
+            <div style="flex: 1; display: flex; flex-direction: column;">
+              <div>
+                <strong><a href="${readerUrl}" target="_blank">${
+          bookInfo.title
+        }</a></strong><br>
+                ${bookInfo.author}
+              </div>
+              <div>
+                ${
+                  isPending
+                    ? `<button style="padding:0 2px;" onclick="window.open('${readerUrl}', '_blank')">待上架</button>`
+                    : !isLoggedIn
+                    ? `<button style="padding:0 2px;" onclick="window.open('${readerUrl}', '_blank')">登录微信读书</button>`
+                    : `<button class="weread-action" style="padding:0 2px;" data-bookid="${
+                        bookInfo.bookId
+                      }" data-readerurl="${readerUrl}" data-inshelf="${isInShelf}">
+                      ${isInShelf ? "已在书架中" : "添加到书架"}
+                     </button>`
+                }
+              </div>
+            </div>
           </li>
         `;
       });
@@ -153,9 +165,15 @@
   function checkShelfStatus(bookIds, callback) {
     GM_xmlhttpRequest({
       method: "GET",
-      url: `https://weread.qq.com/web/shelf/bookIds?bookIds=${bookIds}`,
+      url: `${WEREAD_SHELF_STATUS_URL}?bookIds=${bookIds}`,
       onload: function (response) {
         const result = JSON.parse(response.responseText);
+        debugLog("shelf status", result);
+        if (result.errCode === -2010) {
+          // 未登录
+          callback(null);
+          return;
+        }
         const shelfStatus = {};
         result.data.forEach((item) => {
           shelfStatus[item.bookId] = item.onShelf === 1;
@@ -170,11 +188,18 @@
   }
 
   function addWeReadButtonListeners() {
-    const buttons = document.querySelectorAll(".add-to-weread");
+    const buttons = document.querySelectorAll(".weread-action");
     buttons.forEach((button) => {
       button.addEventListener("click", function () {
         const bookId = this.getAttribute("data-bookid");
-        addToWeRead(bookId);
+        const readerUrl = this.getAttribute("data-readerurl");
+        const isInShelf = this.getAttribute("data-inshelf") === "true";
+
+        if (isInShelf) {
+          window.open(readerUrl, "_blank");
+        } else {
+          addToWeRead(bookId, this);
+        }
       });
     });
   }
@@ -223,7 +248,7 @@
     return bookHash;
   }
 
-  function addToWeRead(bookId) {
+  function addToWeRead(bookId, button) {
     GM_xmlhttpRequest({
       method: "POST",
       url: WEREAD_ADD_BOOK_URL,
@@ -234,9 +259,16 @@
       onload: function (response) {
         const result = JSON.parse(response.responseText);
         if (result.status === 200) {
-          alert("成功添加到微信读书书架！");
+          GM_xmlhttpRequest({
+            method: "GET",
+            url: `${WEREAD_SHELF_STATUS_URL}?bookIds=${bookId}`,
+            onload: function (response) {
+              button.textContent = "已在书架中";
+              button.setAttribute("data-inshelf", "true");
+            },
+          });
         } else {
-          alert("添加失败，请稍后重试。");
+          alert("添加失败");
         }
       },
     });
