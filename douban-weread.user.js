@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Douban to WeRead
-// @version      1.0.0
+// @version      1.1.0
 // @description  Add books from Douban to WeRead library
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -17,10 +17,18 @@
 (function () {
   "use strict";
 
-  const WEREAD_SEARCH_URL = "https://weread.qq.com/web/search/global";
+  const DEBUG = true;
+
+  const WEREAD_SEARCH_URL = "https://weread.qq.com/api/store/search";
   const WEREAD_ADD_BOOK_URL = "https://weread.qq.com/mp/shelf/addToShelf";
   const WEREAD_BOOK_URL_PREFIX = "https://weread.qq.com/web/reader/";
   const WEREAD_SEARCH_COUNT = 1;
+
+  function debugLog(...args) {
+    if (DEBUG) {
+      console.log(...args);
+    }
+  }
 
   function addWeReadBlock() {
     const sidebarElem = document.querySelector("#content .aside");
@@ -29,23 +37,17 @@
     const wereadBlock = document.createElement("div");
     wereadBlock.className = "gray_ad";
     wereadBlock.innerHTML = `
-            <h2>
-                添加到微信读书
-                <span class="pl">
-                    &nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·&nbsp;·
-                </span>
-            </h2>
+            <h2>添加到微信读书</h2>
             <div id="weread-results"></div>
         `;
 
-    // Insert the WeRead block at the beginning of the sidebar
     sidebarElem.insertBefore(wereadBlock, sidebarElem.firstChild);
     searchWeRead();
   }
 
   function searchWeRead() {
     const title = document.querySelector("h1 span").textContent.trim();
-    console.log("title", title);
+    debugLog("title", title);
     const metadata = document.querySelector("#info");
     const metadataDict = {};
     if (metadata) {
@@ -55,12 +57,16 @@
         metadataDict[key] = value;
       });
     }
-    console.log("Metadata:", metadataDict);
+    debugLog("Metadata:", metadataDict);
 
-    const searchKeyword = [title, metadataDict["作者"], metadataDict["副标题"]]
+    const authorRaw = metadataDict["作者"];
+    const authors = authorRaw ? extractAuthors(authorRaw) : [];
+    debugLog("authors:", authors);
+
+    const searchKeyword = [title, metadataDict["副标题"], authors[0]]
       .filter(Boolean)
-      .join(" ");
-    console.log("searchKeyword", searchKeyword);
+      .join("+");
+    debugLog("searchKeyword", searchKeyword);
 
     GM_xmlhttpRequest({
       method: "GET",
@@ -68,12 +74,34 @@
         searchKeyword
       )}&count=${WEREAD_SEARCH_COUNT}`,
       onload: function (response) {
-        console.log("url", response.finalUrl);
-        const books = JSON.parse(response.responseText).books;
-        console.log("books", books);
-        displayWeReadResults(books);
+        debugLog("weread search url", response.finalUrl);
+        const data = JSON.parse(response.responseText);
+        const books = extractBooksFromResults(data.results);
+        const exactMatchBooks = filterExactMatchBooks(books, title);
+        displayWeReadResults(
+          exactMatchBooks.length > 0 ? exactMatchBooks : books
+        );
       },
     });
+  }
+
+  function extractBooksFromResults(results) {
+    const books = [];
+    results.forEach((result) => {
+      if (result.type === 1 || result.type === 2 || result.type === 3) {
+        // 1 for "电子书", 2 for "网络小说", 3 for "待上架"
+        books.push(...result.books);
+      }
+    });
+    debugLog("books", books);
+    return books;
+  }
+
+  function filterExactMatchBooks(books, title) {
+    return books.filter(
+      (book) =>
+        book.bookInfo.title.trim().toLowerCase() === title.trim().toLowerCase()
+    );
   }
 
   function displayWeReadResults(books) {
@@ -92,18 +120,21 @@
           bookInfo.bookId
         )}`;
         const isInShelf = shelfStatus[bookInfo.bookId];
+        const isPending = book.subscribeCount > 0;
         html += `
           <li style="margin-bottom: 10px;">
             <img src="${bookInfo.cover}" alt="${
           bookInfo.title
         }" style="width: 60px; float: left; margin-right: 10px;">
             <div>
-              <strong><a href="${readerUrl}" target="_blank">${
-          bookInfo.title
-        }</a></strong><br>
+              <strong><a href="${
+                !isPending ? readerUrl : readerUrl + "#outline?noScroll=1"
+              }" target="_blank">${bookInfo.title}</a></strong><br>
               ${bookInfo.author}<br>
               ${
-                isInShelf
+                isPending
+                  ? '<span style="color: #eb9108;">待上架</span>'
+                  : isInShelf
                   ? '<span style="color: green;">已在书架中</span>'
                   : `<button class="add-to-weread" style="padding:0 2px;" data-bookid="${bookInfo.bookId}">添加到书架</button>`
               }
@@ -209,6 +240,12 @@
         }
       },
     });
+  }
+
+  function extractAuthors(authorString) {
+    const cleanedString = authorString.replace(/\[.*?\]|\(.*?\)/g, "").trim();
+    const authors = cleanedString.split(/\s*[/／]\s*/);
+    return authors.map((author) => author.trim());
   }
 
   addWeReadBlock();
