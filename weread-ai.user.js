@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WeRead AI Selection Search
-// @version      1.0.0
+// @version      1.0.1
 // @description  Search selected text using WeRead AI search
 // @author       kaiix
 // @namespace    https://github.com/kaiix/userscripts
@@ -230,7 +230,7 @@
             popup.abortController.signal
           );
 
-          if (currentResponse.errcode !== 0) {
+          if (currentResponse.errcode !== 0 && !currentResponse.data) {
             throw new Error("Failed to get response");
           }
 
@@ -252,6 +252,11 @@
             } else {
               responseDiv.innerHTML = answerData.pure_content;
             }
+          } else if (
+            !currentResponse.has_more &&
+            (!answerData || !answerData.markdown)
+          ) {
+            responseDiv.innerHTML = "No answer found 🤔";
           }
 
           if (anchorData?.anchor_datas) {
