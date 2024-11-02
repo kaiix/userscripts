@@ -9,7 +9,9 @@
 - [WeRead AI Selection Search](https://raw.githubusercontent.com/kaiix/userscripts/main/weread-ai.user.js)
 - [Bangumi for Douban](https://raw.githubusercontent.com/kaiix/userscripts/main/douban-bangumi.user.js)
 
----
+## Userscript Managers
 
-see https://greasyfork.org for suggested userscript managers
-recommend https://violentmonkey.github.io
+For installing and managing userscripts:
+
+- Visit [Greasyfork](https://greasyfork.org) for suggested userscript managers
+- Recommended: [Violentmonkey](https://violentmonkey.github.io)
