@@ -88,6 +88,7 @@
     .weread-popup-title {
       margin: 0;
       font-size: 18px;
+      color: #333;
     }
 
     .weread-close-button {
