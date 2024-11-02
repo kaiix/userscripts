@@ -7,6 +7,7 @@
 - [NeoDB for Douban](https://raw.githubusercontent.com/kaiix/userscripts/main/douban-neodb.user.js)
 - [Douban to WeRead](https://raw.githubusercontent.com/kaiix/userscripts/main/douban-weread.user.js)
 - [WeRead AI Selection Search](https://raw.githubusercontent.com/kaiix/userscripts/main/weread-ai.user.js)
+- [Bangumi for Douban](https://raw.githubusercontent.com/kaiix/userscripts/main/douban-bangumi.user.js)
 
 ---
 
