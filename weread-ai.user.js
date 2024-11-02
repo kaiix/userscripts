@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WeRead AI Selection Search
-// @version      1.0.1
+// @version      1.0.2
 // @description  Search selected text using WeRead AI search
 // @author       kaiix
 // @namespace    https://github.com/kaiix/userscripts
