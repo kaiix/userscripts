@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Douban Bangumi Score
-// @version      1.0.0
+// @version      1.0.1
 // @description  Show Bangumi scores on Douban anime pages
 // @author       kaiix
 // @namespace    https://github.com/kaiix/userscripts
@@ -17,13 +17,12 @@
 (function () {
   "use strict";
 
-  // Only run on animation pages
   if (!isAnimePage()) return;
 
-  // Get the Chinese title from Douban page
-  const title = document.querySelector(
-    'h1 span[property="v:itemreviewed"]'
-  ).textContent;
+  const metaKeywords = document.querySelector('meta[name="keywords"]');
+  const title = metaKeywords
+    ? metaKeywords.content.split(",")[0].trim()
+    : document.querySelector('h1 span[property="v:itemreviewed"]').textContent;
 
   searchBangumi(title);
 
