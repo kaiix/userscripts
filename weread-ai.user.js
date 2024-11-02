@@ -8,10 +8,13 @@
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getResourceURL
 // @icon         https://weread.qq.com/favicon.ico
 // @updateURL    https://raw.githubusercontent.com/kaiix/userscripts/main/weread-ai.user.js
 // @downloadURL  https://raw.githubusercontent.com/kaiix/userscripts/main/weread-ai.user.js
 // @supportURL   https://github.com/kaiix/userscripts/issues
+// @require      https://cdn.jsdelivr.net/npm/marked/marked.min.js
+// @resource     ICON https://rescdn.qqmail.com/node/wr/wrpage/style/images/independent/favicon/favicon_32h.png
 // ==/UserScript==
 
 (function () {
@@ -19,10 +22,6 @@
 
   const WEREAD_AI_URL = "https://weread.qq.com/web/ai/query_session_id";
   const WEREAD_LOGIN_CHECK = "https://weread.qq.com";
-
-  const markedScript = document.createElement("script");
-  markedScript.src = "https://cdn.jsdelivr.net/npm/marked/marked.min.js";
-  document.head.appendChild(markedScript);
 
   const markdownStyles = document.createElement("style");
   markdownStyles.textContent = `
@@ -163,10 +162,11 @@
       position: absolute;
       width: 32px;
       height: 32px;
-      background-image: url('https://rescdn.qqmail.com/node/wr/wrpage/style/images/independent/favicon/favicon_32h.png');
+      background-image: url('${GM_getResourceURL("ICON")}');
       background-size: contain;
       background-position: center;
       background-repeat: no-repeat;
+      background-color: #1b88ee;
       border-radius: 50%;
       display: flex;
       align-items: center;
@@ -242,16 +242,11 @@
           );
 
           if (answerData?.markdown) {
-            let markedLib = marked || window.marked;
-            if (markedLib) {
-              responseDiv.className =
-                "weread-response-content weread-markdown-content";
-              const parsedContent = markedLib.parse(answerData.markdown);
-              console.log("parsedContent", parsedContent);
-              responseDiv.innerHTML = parsedContent;
-            } else {
-              responseDiv.innerHTML = answerData.pure_content;
-            }
+            responseDiv.className =
+              "weread-response-content weread-markdown-content";
+            const parsedContent = marked.parse(answerData.markdown);
+            console.log("parsedContent", parsedContent);
+            responseDiv.innerHTML = parsedContent;
           } else if (
             !currentResponse.has_more &&
             (!answerData || !answerData.markdown)
