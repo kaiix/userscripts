@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name        Twitter Start Tab
-// @version     1.0.0
+// @version     1.1.0
 // @description set starting tab for twitter
 // @author      kaiix
 // @namespace   https://github.com/kaiix
 // @license     MIT
 // @match       https://twitter.com/*
+// @match       https://x.com/*
 // @icon        https://www.google.com/s2/favicons?sz=64&domain=twitter.com
 // @grant       GM_getValue
 // @grant       GM_setValue
@@ -47,18 +48,38 @@
 
   const startTab = useOption("twitter_start_tab", "current tab", "Following");
 
-  function findTab(tabName) {
-    const tabs = document.querySelectorAll('a[role="tab"]');
-    const result = Array.from(tabs).filter(
-      (el) => el.innerText.toLowerCase() === tabName.toLowerCase()
-    );
-    return result.length > 0 ? result[0] : null;
+  async function findTab(tabName) {
+    const maxAttempts = 10;
+
+    for (let attempts = 0; attempts < maxAttempts; attempts++) {
+      const tabs = document.querySelectorAll('a[role="tab"]');
+      const tab = Array.from(tabs).find(
+        (el) => el.innerText.trim().toLowerCase() === tabName.toLowerCase()
+      );
+
+      if (tab) {
+        return tab;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    console.warn(`[Twitter Start Tab] Failed to find tab: ${tabName}`);
+    return null;
   }
 
-  window.addEventListener("load", () => {
-    setTimeout(() => {
-      const tab = findTab(startTab.value);
-      if (tab) tab.click();
-    }, 800);
+  const observer = new MutationObserver(async (mutations, obs) => {
+    if (document.querySelector('a[role="tab"]')) {
+      obs.disconnect();
+      const tab = await findTab(startTab.value);
+      if (tab && tab.getAttribute("aria-selected") !== "true") {
+        tab.click();
+      }
+    }
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
   });
 })();
