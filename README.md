@@ -8,6 +8,7 @@
 - [Douban to WeRead](https://raw.githubusercontent.com/kaiix/userscripts/main/douban-weread.user.js)
 - [WeRead AI Selection Search](https://raw.githubusercontent.com/kaiix/userscripts/main/weread-ai.user.js)
 - [Bangumi for Douban](https://raw.githubusercontent.com/kaiix/userscripts/main/douban-bangumi.user.js)
+- [GitHub to DeepWiki](https://raw.githubusercontent.com/kaiix/userscripts/main/github-deepwiki.user.js)
 
 ## Userscript Managers
 
