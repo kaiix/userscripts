@@ -25,6 +25,13 @@
       icon: "💬",
       action: () => startNewChat(),
     },
+    {
+      id: "change-model",
+      title: "Change Model",
+      description: "Switch between Gemini models",
+      icon: "🔄",
+      action: () => changeModel(),
+    },
   ];
 
   let isOpen = false;
@@ -407,6 +414,84 @@
     // Method 3: Try to clear current conversation by navigating to app root
     console.log("[Gemini Command Palette] Trying to start fresh conversation");
     window.location.href = "https://gemini.google.com/app";
+  }
+
+  function changeModel() {
+    console.log("[Gemini Command Palette] Changing model...");
+
+    // Method 1: Look for model selector/dropdown button
+    const selectors = [
+      '[data-test-id="model-selector"]',
+      '[aria-label*="model"]',
+      '[aria-label*="Model"]',
+      'button[aria-label*="model"]',
+      'button[aria-label*="Model"]',
+      ".model-selector",
+      '[role="button"][aria-label*="Gemini"]',
+      "button[aria-expanded]", // Dropdown buttons
+      '[data-test-id="conversation-model-switcher-button"]',
+    ];
+
+    for (const selector of selectors) {
+      const button = document.querySelector(selector);
+      if (button) {
+        console.log(
+          "[Gemini Command Palette] Found model selector button:",
+          selector
+        );
+        button.click();
+        console.log("[Gemini Command Palette] Clicked model selector");
+        return;
+      }
+    }
+
+    // Method 2: Look for any button/element containing "Gemini" text
+    const elements = document.querySelectorAll('button, [role="button"]');
+    for (const element of elements) {
+      const text = element.textContent || element.innerText || "";
+      if (text.includes("Gemini") || text.includes("model")) {
+        console.log(
+          "[Gemini Command Palette] Found potential model button with text:",
+          text
+        );
+        element.click();
+        console.log("[Gemini Command Palette] Clicked model button");
+        return;
+      }
+    }
+
+    // Method 3: Look for settings or preferences that might contain model selection
+    const settingsSelectors = [
+      '[aria-label*="Settings"]',
+      '[aria-label*="settings"]',
+      'button[aria-label*="Settings"]',
+      ".settings-button",
+      '[data-test-id="settings"]',
+    ];
+
+    for (const selector of settingsSelectors) {
+      const button = document.querySelector(selector);
+      if (button) {
+        console.log(
+          "[Gemini Command Palette] Found settings button, opening:",
+          selector
+        );
+        button.click();
+        console.log(
+          "[Gemini Command Palette] Opened settings for model selection"
+        );
+        return;
+      }
+    }
+
+    console.log(
+      "[Gemini Command Palette] No model selector found. The model selection UI might not be available or uses different selectors."
+    );
+
+    // Show a helpful message to the user
+    alert(
+      "Model selector not found. Try looking for a model/settings button in the Gemini interface."
+    );
   }
 
   // Keyboard event handler
