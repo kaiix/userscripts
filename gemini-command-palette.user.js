@@ -218,7 +218,8 @@
 
     const shortcuts = document.createElement("div");
     shortcuts.className = "gemini-command-palette-shortcuts";
-    shortcuts.textContent = "Use ↑↓ to navigate, Enter to select, Esc to close";
+    shortcuts.textContent =
+      "Use ↑↓ or Ctrl-P/Ctrl-N to navigate, Enter to select, Esc to close";
 
     header.appendChild(title);
     header.appendChild(shortcuts);
@@ -524,12 +525,16 @@
         break;
 
       case "ArrowDown":
+      case "n": // Ctrl-N for next (Emacs style)
+        if (event.key === "n" && !event.ctrlKey) break; // Only handle Ctrl-N, not plain 'n'
         event.preventDefault();
         selectedIndex = Math.min(selectedIndex + 1, commands.length - 1);
         updateSelection();
         break;
 
       case "ArrowUp":
+      case "p": // Ctrl-P for previous (Emacs style)
+        if (event.key === "p" && !event.ctrlKey) break; // Only handle Ctrl-P, not plain 'p'
         event.preventDefault();
         selectedIndex = Math.max(selectedIndex - 1, 0);
         updateSelection();
