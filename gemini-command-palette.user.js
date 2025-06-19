@@ -32,6 +32,13 @@
       icon: "🔄",
       action: () => changeModel(),
     },
+    {
+      id: "delete-chat",
+      title: "Delete Current Chat",
+      description: "Delete the current conversation",
+      icon: "🗑️",
+      action: () => deleteCurrentChat(),
+    },
   ];
 
   let isOpen = false;
@@ -493,6 +500,167 @@
     alert(
       "Model selector not found. Try looking for a model/settings button in the Gemini interface."
     );
+  }
+
+  function deleteCurrentChat() {
+    console.log("[Gemini Command Palette] Deleting current chat...");
+
+    // Method 1: Look for existing delete button if menu is already open
+    const existingDeleteButton = document.querySelector(
+      '[data-test-id="delete-button"]'
+    );
+    if (existingDeleteButton) {
+      console.log(
+        "[Gemini Command Palette] Found existing delete button in open menu"
+      );
+      existingDeleteButton.click();
+      console.log("[Gemini Command Palette] Clicked delete button");
+      return;
+    }
+
+    // Method 2: Look for the conversation actions menu button (three dots) for current conversation
+    console.log(
+      "[Gemini Command Palette] Looking for conversation actions menu button..."
+    );
+
+    // First, try to find the selected conversation (current chat)
+    const selectedConversation = document.querySelector(
+      ".conversation.selected"
+    );
+    if (selectedConversation) {
+      console.log("[Gemini Command Palette] Found selected conversation");
+
+      // Look for the actions menu button within the selected conversation's container
+      const conversationContainer = selectedConversation.closest(
+        ".conversation-items-container"
+      );
+      if (conversationContainer) {
+        const actionsButton = conversationContainer.querySelector(
+          '[data-test-id="actions-menu-button"]'
+        );
+        if (actionsButton) {
+          console.log(
+            "[Gemini Command Palette] Found actions menu button for selected conversation"
+          );
+          actionsButton.click();
+
+          // Wait for menu to appear and click delete
+          setTimeout(() => {
+            const deleteButton = document.querySelector(
+              '[data-test-id="delete-button"]'
+            );
+            if (deleteButton) {
+              console.log(
+                "[Gemini Command Palette] Found delete button in menu"
+              );
+              deleteButton.click();
+              console.log("[Gemini Command Palette] Clicked delete button");
+            } else {
+              console.log(
+                "[Gemini Command Palette] Delete button not found in menu"
+              );
+            }
+          }, 150);
+          return;
+        }
+      }
+    }
+
+    // Method 3: Look for any visible actions menu button
+    console.log(
+      "[Gemini Command Palette] Looking for any actions menu button..."
+    );
+    const actionsButtons = document.querySelectorAll(
+      '[data-test-id="actions-menu-button"]'
+    );
+    for (const button of actionsButtons) {
+      const rect = button.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        console.log(
+          "[Gemini Command Palette] Found visible actions menu button"
+        );
+        button.click();
+
+        setTimeout(() => {
+          const deleteButton = document.querySelector(
+            '[data-test-id="delete-button"]'
+          );
+          if (deleteButton) {
+            console.log("[Gemini Command Palette] Found delete button in menu");
+            deleteButton.click();
+            console.log("[Gemini Command Palette] Clicked delete button");
+          }
+        }, 150);
+        return;
+      }
+    }
+
+    // Method 4: Look for menu buttons with aria-label containing menu/options
+    console.log("[Gemini Command Palette] Looking for menu buttons...");
+    const menuSelectors = [
+      'button[aria-label*="menu"]',
+      'button[aria-label*="Menu"]',
+      'button[aria-label*="options"]',
+      'button[aria-label*="Options"]',
+      'button[aria-label*="More"]',
+      'button[aria-label*="more"]',
+      ".conversation-actions-menu-button",
+      '[aria-haspopup="menu"]',
+    ];
+
+    for (const selector of menuSelectors) {
+      const button = document.querySelector(selector);
+      if (button) {
+        const rect = button.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          console.log("[Gemini Command Palette] Found menu button:", selector);
+          button.click();
+
+          setTimeout(() => {
+            const deleteButton = document.querySelector(
+              '[data-test-id="delete-button"]'
+            );
+            if (deleteButton) {
+              console.log(
+                "[Gemini Command Palette] Found delete option in menu"
+              );
+              deleteButton.click();
+              console.log("[Gemini Command Palette] Clicked delete button");
+            }
+          }, 150);
+          return;
+        }
+      }
+    }
+
+    // Method 5: Try keyboard shortcut for delete
+    console.log("[Gemini Command Palette] Trying delete keyboard shortcut...");
+    const deleteEvent = new KeyboardEvent("keydown", {
+      key: "Delete",
+      code: "Delete",
+      keyCode: 46,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(deleteEvent);
+
+    // Also try Backspace
+    const backspaceEvent = new KeyboardEvent("keydown", {
+      key: "Backspace",
+      code: "Backspace",
+      keyCode: 8,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(backspaceEvent);
+
+    // Method 6: As fallback, start a new chat (effectively "clearing" current one)
+    setTimeout(() => {
+      console.log(
+        "[Gemini Command Palette] No delete method worked, starting new chat as alternative..."
+      );
+      startNewChat();
+    }, 300);
   }
 
   // Keyboard event handler
