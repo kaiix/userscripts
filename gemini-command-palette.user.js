@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Gemini Command Palette
-// @version     1.1.0
+// @version     1.1.1
 // @description Adds a command palette to Gemini with keyboard shortcuts
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -701,6 +701,24 @@
 
     // Open palette with Ctrl/Cmd + K
     if ((event.ctrlKey || event.metaKey) && event.key === "k") {
+      // Check if the user is focused on the prompt input area
+      const activeElement = document.activeElement;
+      const isInputFocused =
+        activeElement &&
+        (activeElement.matches('[role="textbox"]') ||
+          activeElement.closest(".ql-editor") ||
+          activeElement.tagName === "TEXTAREA" ||
+          activeElement.tagName === "INPUT" ||
+          activeElement.getAttribute("contenteditable") === "true");
+
+      // When input is focused, allow default Cmd+K behavior (e.g., insert link)
+      if (isInputFocused) {
+        console.log(
+          "[Gemini Command Palette] Input focused, allowing default Cmd+K."
+        );
+        return; // Do not open palette, allow default action
+      }
+
       console.log(
         "[Gemini Command Palette] Cmd/Ctrl+K detected, opening palette"
       );
