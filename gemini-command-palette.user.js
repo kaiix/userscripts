@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Gemini Command Palette
-// @version     1.0.0
+// @version     1.1.0
 // @description Adds a command palette to Gemini with keyboard shortcuts
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -24,6 +24,13 @@
       description: "Start a new conversation",
       icon: "💬",
       action: () => startNewChat(),
+    },
+    {
+      id: "new-temp-chat",
+      title: "New Temporary Chat",
+      description: "Start a new temporary conversation",
+      icon: "👻",
+      action: () => startNewTempChat(),
     },
     {
       id: "change-model",
@@ -661,6 +668,26 @@
       );
       startNewChat();
     }, 300);
+  }
+
+  function startNewTempChat() {
+    console.log("[Gemini Command Palette] Starting new temporary chat...");
+    const tempChatButton = document.querySelector(
+      '[data-test-id="temp-chat-button"]'
+    );
+    if (tempChatButton) {
+      console.log(
+        "[Gemini Command Palette] Found temporary chat button:",
+        tempChatButton
+      );
+      tempChatButton.click();
+      console.log("[Gemini Command Palette] Clicked temporary chat button");
+    } else {
+      console.log("[Gemini Command Palette] No temporary chat button found.");
+      alert(
+        "Could not find the 'Temporary chat' button. The UI might have changed."
+      );
+    }
   }
 
   // Keyboard event handler
