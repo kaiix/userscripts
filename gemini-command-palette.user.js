@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Gemini Command Palette
-// @version     1.1.1
+// @version     1.1.2
 // @description Adds a command palette to Gemini with keyboard shortcuts
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -33,18 +33,18 @@
       action: () => startNewTempChat(),
     },
     {
-      id: "change-model",
-      title: "Change Model",
-      description: "Switch between Gemini models",
-      icon: "🔄",
-      action: () => changeModel(),
-    },
-    {
       id: "delete-chat",
       title: "Delete Current Chat",
       description: "Delete the current conversation",
       icon: "🗑️",
       action: () => deleteCurrentChat(),
+    },
+    {
+      id: "change-model",
+      title: "Change Model",
+      description: "Switch between Gemini models",
+      icon: "🔄",
+      action: () => changeModel(),
     },
   ];
 
