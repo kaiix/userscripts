@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Linear Board Reactions
-// @version      0.2
+// @version      0.3
 // @description  Display reactions on Linear board cards
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -103,7 +103,6 @@
       onload: function (response) {
         if (response.status === 200) {
           const jsonResponse = JSON.parse(response.responseText);
-          console.log("jsonResponse", jsonResponse);
           if (jsonResponse.data && jsonResponse.data.issue) {
             const reactionNodes = jsonResponse.data.issue.reactions;
             const reactions = reactionNodes.map((node) => ({
