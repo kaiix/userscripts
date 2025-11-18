@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Linear Board Reactions
-// @version      0.3
+// @version      0.4
 // @description  Display reactions on Linear board cards
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const processedIssues = new Set();
+  let issueReactionsMap = new Map();
   let lastUrl = location.href;
 
   const emojiMap = {
@@ -33,6 +33,11 @@
 
   const getEmojiCharacter = (emoji) => {
     return emojiMap[emoji] || emoji;
+  };
+
+  const getViewIdFromUrl = (url) => {
+    const match = url.match(/view\/([a-zA-Z0-9-]+)/);
+    return match ? match[1] : null;
   };
 
   const getIssueIdFromCard = (card) => {
@@ -72,20 +77,25 @@
     return null;
   };
 
-  const fetchReactions = (issueId, callback) => {
+  const fetchReactionsForView = (viewId, callback) => {
     const headers = getClientApiHeaders();
     if (!headers) {
       console.error(
         "Linear Reactions Userscript: Could not get client API headers."
       );
-      callback([]);
+      callback(null);
       return;
     }
     const query = `
-        query IssueReactionsByIdentifier($identifier: String!) {
-          issue(id: $identifier) {
-              reactions {
-                emoji
+        query CustomViewIssuesWithReactions($id: String!) {
+          customView(id: $id) {
+            issues {
+              nodes {
+                identifier
+                reactions {
+                  emoji
+                }
+              }
             }
           }
         }`;
@@ -97,29 +107,40 @@
       data: JSON.stringify({
         query: query,
         variables: {
-          identifier: issueId,
+          id: viewId,
         },
       }),
       onload: function (response) {
         if (response.status === 200) {
           const jsonResponse = JSON.parse(response.responseText);
-          if (jsonResponse.data && jsonResponse.data.issue) {
-            const reactionNodes = jsonResponse.data.issue.reactions;
-            const reactions = reactionNodes.map((node) => ({
-              emoji: node.emoji,
-            }));
-            callback(reactions);
+          if (jsonResponse.data && jsonResponse.data.customView) {
+            const issues = jsonResponse.data.customView.issues.nodes;
+            const reactionsMap = new Map();
+            issues.forEach((issue) => {
+              const reactions = issue.reactions.map((node) => ({
+                emoji: node.emoji,
+              }));
+              reactionsMap.set(issue.identifier, reactions);
+            });
+            callback(reactionsMap);
           } else {
-            callback([]);
+            console.error(
+              "Failed to parse reactions from response",
+              jsonResponse
+            );
+            callback(null);
           }
         } else {
-          console.error(`Failed to fetch reactions for ${issueId}`, response);
-          callback([]);
+          console.error(
+            `Failed to fetch reactions for view ${viewId}`,
+            response
+          );
+          callback(null);
         }
       },
       onerror: function (error) {
-        console.error(`Error fetching reactions for ${issueId}`, error);
-        callback([]);
+        console.error(`Error fetching reactions for view ${viewId}`, error);
+        callback(null);
       },
     });
   };
@@ -171,34 +192,56 @@
   };
 
   const processCard = (card) => {
-    // Check if the card is visible. This is a simple check.
     if (card.offsetParent === null) {
       return;
     }
 
     const issueId = getIssueIdFromCard(card);
-    if (issueId && !processedIssues.has(issueId)) {
-      processedIssues.add(issueId);
-      fetchReactions(issueId, (reactions) => {
-        displayReactions(card, reactions);
+    if (
+      issueId &&
+      issueReactionsMap.has(issueId) &&
+      !card.dataset.reactionsDisplayed
+    ) {
+      displayReactions(card, issueReactionsMap.get(issueId));
+      card.dataset.reactionsDisplayed = "true";
+    }
+  };
+
+  const processAllCards = () => {
+    document.querySelectorAll('[data-board-item="true"]').forEach(processCard);
+  };
+
+  const loadReactionsForCurrentView = () => {
+    const viewId = getViewIdFromUrl(location.href);
+    if (viewId) {
+      fetchReactionsForView(viewId, (reactionsMap) => {
+        if (reactionsMap) {
+          issueReactionsMap = reactionsMap;
+          processAllCards();
+        }
       });
     }
   };
 
   const observeDOM = () => {
+    loadReactionsForCurrentView();
+
     const observer = new MutationObserver((mutations) => {
       // Handle URL changes for SPA navigation
       const currentUrl = location.href;
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
         if (currentUrl.includes("/view/")) {
-          processedIssues.clear();
+          issueReactionsMap.clear();
+          document
+            .querySelectorAll('[data-board-item="true"]')
+            .forEach((card) => {
+              delete card.dataset.reactionsDisplayed;
+              const container = card.querySelector(".reactions-container");
+              if (container) container.remove();
+            });
           // Re-process cards on the board after a short delay
-          setTimeout(() => {
-            document
-              .querySelectorAll('[data-board-item="true"]')
-              .forEach(processCard);
-          }, 500);
+          setTimeout(loadReactionsForCurrentView, 500);
         }
       }
 
