@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Linear Board Reactions
-// @version      0.4
-// @description  Display reactions on Linear board cards
+// @version      0.5
+// @description  Display reactions on Linear board cards and sub-issues
 // @author       kaiix
 // @namespace    https://github.com/kaiix
 // @license      MIT
 // @match        https://linear.app/*/view/*
+// @match        https://linear.app/*/issue/*
 // @grant        GM_xmlhttpRequest
 // @icon        https://www.linear.app/favicon.ico
 // @updateURL   https://raw.githubusercontent.com/kaiix/userscripts/main/linear-board-reactions.user.js
@@ -37,6 +38,11 @@
 
   const getViewIdFromUrl = (url) => {
     const match = url.match(/view\/([a-zA-Z0-9-]+)/);
+    return match ? match[1] : null;
+  };
+
+  const getIssueIdFromUrl = (url) => {
+    const match = url.match(/issue\/([A-Z]+-\d+|[a-f0-9-]+)/);
     return match ? match[1] : null;
   };
 
@@ -145,6 +151,78 @@
     });
   };
 
+  const fetchReactionsForSubIssues = (issueId, callback) => {
+    const headers = getClientApiHeaders();
+    if (!headers) {
+      console.error(
+        "Linear Reactions Userscript: Could not get client API headers."
+      );
+      callback(null);
+      return;
+    }
+    const query = `
+        query IssueWithSubIssueReactions($id: String!) {
+          issue(id: $id) {
+            children {
+              nodes {
+                identifier
+                reactions {
+                  emoji
+                }
+              }
+            }
+          }
+        }`;
+
+    GM_xmlhttpRequest({
+      method: "POST",
+      url: "https://client-api.linear.app/graphql",
+      headers: headers,
+      data: JSON.stringify({
+        query: query,
+        variables: {
+          id: issueId,
+        },
+      }),
+      onload: function (response) {
+        if (response.status === 200) {
+          const jsonResponse = JSON.parse(response.responseText);
+          if (
+            jsonResponse.data &&
+            jsonResponse.data.issue &&
+            jsonResponse.data.issue.children
+          ) {
+            const issues = jsonResponse.data.issue.children.nodes;
+            const reactionsMap = new Map();
+            issues.forEach((issue) => {
+              const reactions = issue.reactions.map((node) => ({
+                emoji: node.emoji,
+              }));
+              reactionsMap.set(issue.identifier, reactions);
+            });
+            callback(reactionsMap);
+          } else {
+            console.error(
+              "Failed to parse reactions from response",
+              jsonResponse
+            );
+            callback(null);
+          }
+        } else {
+          console.error(
+            `Failed to fetch reactions for issue ${issueId}`,
+            response
+          );
+          callback(null);
+        }
+      },
+      onerror: function (error) {
+        console.error(`Error fetching reactions for issue ${issueId}`, error);
+        callback(null);
+      },
+    });
+  };
+
   const displayReactions = (card, reactions) => {
     if (!reactions || reactions.length === 0) {
       return;
@@ -167,11 +245,21 @@
       reactionsContainer = document.createElement("div");
       reactionsContainer.className = "reactions-container";
       reactionsContainer.style.position = "absolute";
-      reactionsContainer.style.bottom = "8px";
-      reactionsContainer.style.right = "8px";
       reactionsContainer.style.display = "flex";
       reactionsContainer.style.gap = "4px";
       reactionsContainer.style.zIndex = "1";
+
+      if (card.matches('a[data-list-row="true"]')) {
+        // Sub-issue row
+        reactionsContainer.style.bottom = "50%";
+        reactionsContainer.style.transform = "translateY(50%)";
+        reactionsContainer.style.right = "40px";
+      } else {
+        // Board card
+        reactionsContainer.style.bottom = "8px";
+        reactionsContainer.style.right = "8px";
+      }
+
       card.appendChild(reactionsContainer);
     }
 
@@ -191,24 +279,30 @@
     }
   };
 
-  const processCard = (card) => {
-    if (card.offsetParent === null) {
+  const processItem = (item) => {
+    if (item.offsetParent === null) {
       return;
     }
 
-    const issueId = getIssueIdFromCard(card);
+    const issueId = getIssueIdFromCard(item);
     if (
       issueId &&
       issueReactionsMap.has(issueId) &&
-      !card.dataset.reactionsDisplayed
+      !item.dataset.reactionsDisplayed
     ) {
-      displayReactions(card, issueReactionsMap.get(issueId));
-      card.dataset.reactionsDisplayed = "true";
+      displayReactions(item, issueReactionsMap.get(issueId));
+      item.dataset.reactionsDisplayed = "true";
     }
   };
 
   const processAllCards = () => {
-    document.querySelectorAll('[data-board-item="true"]').forEach(processCard);
+    document.querySelectorAll('[data-board-item="true"]').forEach(processItem);
+  };
+
+  const processAllSubIssueRows = () => {
+    document
+      .querySelectorAll('a[href*="/issue/"][data-list-row="true"]')
+      .forEach(processItem);
   };
 
   const loadReactionsForCurrentView = () => {
@@ -223,25 +317,43 @@
     }
   };
 
+  const loadReactionsForCurrentIssue = () => {
+    const issueId = getIssueIdFromUrl(location.href);
+    if (issueId) {
+      fetchReactionsForSubIssues(issueId, (reactionsMap) => {
+        if (reactionsMap) {
+          issueReactionsMap = reactionsMap;
+          processAllSubIssueRows();
+        }
+      });
+    }
+  };
+
   const observeDOM = () => {
-    loadReactionsForCurrentView();
+    if (location.href.includes("/view/")) {
+      loadReactionsForCurrentView();
+    } else if (location.href.includes("/issue/")) {
+      loadReactionsForCurrentIssue();
+    }
 
     const observer = new MutationObserver((mutations) => {
       // Handle URL changes for SPA navigation
       const currentUrl = location.href;
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
+        issueReactionsMap.clear();
+        document
+          .querySelectorAll("[data-reactions-displayed='true']")
+          .forEach((el) => {
+            delete el.dataset.reactionsDisplayed;
+            const container = el.querySelector(".reactions-container");
+            if (container) container.remove();
+          });
+
         if (currentUrl.includes("/view/")) {
-          issueReactionsMap.clear();
-          document
-            .querySelectorAll('[data-board-item="true"]')
-            .forEach((card) => {
-              delete card.dataset.reactionsDisplayed;
-              const container = card.querySelector(".reactions-container");
-              if (container) container.remove();
-            });
-          // Re-process cards on the board after a short delay
           setTimeout(loadReactionsForCurrentView, 500);
+        } else if (currentUrl.includes("/issue/")) {
+          setTimeout(loadReactionsForCurrentIssue, 500);
         }
       }
 
@@ -250,11 +362,13 @@
           mutation.addedNodes.forEach((node) => {
             if (node.nodeType === 1) {
               // ELEMENT_NODE
-              if (node.matches('[data-board-item="true"]')) {
-                processCard(node);
+              const selector =
+                '[data-board-item="true"], a[href*="/issue/"][data-list-row="true"]';
+              if (node.matches(selector)) {
+                processItem(node);
               }
-              const cards = node.querySelectorAll('[data-board-item="true"]');
-              cards.forEach(processCard);
+              const items = node.querySelectorAll(selector);
+              items.forEach(processItem);
             }
           });
         }
