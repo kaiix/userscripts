@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Linear Board Reactions
-// @version      0.1
+// @version      0.2
 // @description  Display reactions on Linear board cards
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -17,6 +17,7 @@
   "use strict";
 
   const processedIssues = new Set();
+  let lastUrl = location.href;
 
   const emojiMap = {
     "+1": "👍",
@@ -170,28 +171,48 @@
     }
   };
 
+  const processCard = (card) => {
+    // Check if the card is visible. This is a simple check.
+    if (card.offsetParent === null) {
+      return;
+    }
+
+    const issueId = getIssueIdFromCard(card);
+    if (issueId && !processedIssues.has(issueId)) {
+      processedIssues.add(issueId);
+      fetchReactions(issueId, (reactions) => {
+        displayReactions(card, reactions);
+      });
+    }
+  };
+
   const observeDOM = () => {
     const observer = new MutationObserver((mutations) => {
+      // Handle URL changes for SPA navigation
+      const currentUrl = location.href;
+      if (currentUrl !== lastUrl) {
+        lastUrl = currentUrl;
+        if (currentUrl.includes("/view/")) {
+          processedIssues.clear();
+          // Re-process cards on the board after a short delay
+          setTimeout(() => {
+            document
+              .querySelectorAll('[data-board-item="true"]')
+              .forEach(processCard);
+          }, 500);
+        }
+      }
+
       mutations.forEach((mutation) => {
         if (mutation.addedNodes.length) {
           mutation.addedNodes.forEach((node) => {
             if (node.nodeType === 1) {
               // ELEMENT_NODE
+              if (node.matches('[data-board-item="true"]')) {
+                processCard(node);
+              }
               const cards = node.querySelectorAll('[data-board-item="true"]');
-              cards.forEach((card) => {
-                // Check if the card is visible. This is a simple check.
-                if (card.offsetParent === null) {
-                  return;
-                }
-
-                const issueId = getIssueIdFromCard(card);
-                if (issueId && !processedIssues.has(issueId)) {
-                  processedIssues.add(issueId);
-                  fetchReactions(issueId, (reactions) => {
-                    displayReactions(card, reactions);
-                  });
-                }
-              });
+              cards.forEach(processCard);
             }
           });
         }
