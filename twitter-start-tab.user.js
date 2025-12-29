@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Twitter Start Tab
-// @version     1.1.0
+// @version     1.2.0
 // @description set starting tab for twitter
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -52,7 +52,7 @@
     const maxAttempts = 10;
 
     for (let attempts = 0; attempts < maxAttempts; attempts++) {
-      const tabs = document.querySelectorAll('a[role="tab"]');
+      const tabs = document.querySelectorAll('[role="tab"]');
       const tab = Array.from(tabs).find(
         (el) => el.innerText.trim().toLowerCase() === tabName.toLowerCase()
       );
@@ -69,7 +69,7 @@
   }
 
   const observer = new MutationObserver(async (mutations, obs) => {
-    if (document.querySelector('a[role="tab"]')) {
+    if (document.querySelector('[role="tab"]')) {
       obs.disconnect();
       const tab = await findTab(startTab.value);
       if (tab && tab.getAttribute("aria-selected") !== "true") {
