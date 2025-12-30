@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Gemini Command Palette
-// @version     1.1.2
+// @version     1.3.4
 // @description Adds a command palette to Gemini with keyboard shortcuts
 // @author      kaiix
 // @namespace   https://github.com/kaiix
@@ -23,28 +23,40 @@
       title: "New Chat",
       description: "Start a new conversation",
       icon: "💬",
+      shortcut: "1",
       action: () => startNewChat(),
-    },
-    {
-      id: "new-temp-chat",
-      title: "New Temporary Chat",
-      description: "Start a new temporary conversation",
-      icon: "👻",
-      action: () => startNewTempChat(),
     },
     {
       id: "delete-chat",
       title: "Delete Current Chat",
       description: "Delete the current conversation",
       icon: "🗑️",
+      shortcut: "2",
       action: () => deleteCurrentChat(),
     },
     {
-      id: "change-model",
-      title: "Change Model",
-      description: "Switch between Gemini models",
-      icon: "🔄",
-      action: () => changeModel(),
+      id: "switch-gemini-fast",
+      title: "Switch to Gemini Fast",
+      description: "Switch to Gemini 3 Fast model - Answers quickly",
+      icon: "⚡",
+      shortcut: "3",
+      action: () => switchToModel("Fast"),
+    },
+    {
+      id: "switch-gemini-thinking",
+      title: "Switch to Gemini Thinking",
+      description: "Switch to Gemini Thinking model",
+      icon: "🤔",
+      shortcut: "4",
+      action: () => switchToModel("Thinking"),
+    },
+    {
+      id: "switch-gemini-pro",
+      title: "Switch to Gemini Pro",
+      description: "Switch to Gemini Pro model - Advanced math & code",
+      icon: "🚀",
+      shortcut: "5",
+      action: () => switchToModel("Pro"),
     },
   ];
 
@@ -111,11 +123,11 @@
     }
 
     .gemini-command-item {
-      padding: 12px 20px;
+      padding: 10px 16px;
       cursor: pointer;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       transition: background-color 0.15s ease;
       border: none;
       background: none;
@@ -157,12 +169,18 @@
     }
 
     .gemini-command-shortcut {
-      font-size: 11px;
-      color: #5f6368;
-      background: #f8f9fa;
-      padding: 2px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      color: #1a73e8;
+      background: #e3f2fd;
       border-radius: 4px;
-      border: 1px solid #dadce0;
+      border: 1px solid #bbdefb;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -203,10 +221,15 @@
       }
 
       .gemini-command-shortcut {
-        background: #303134;
-        border-color: #5f6368;
-        color: #9aa0a6;
+        background: #1e3a8a;
+        border-color: #3b82f6;
+        color: #93c5fd;
       }
+
+    .gemini-command-palette:focus,
+    .gemini-command-palette-overlay:focus {
+      outline: none;
+    }
     }
   `);
 
@@ -221,6 +244,7 @@
     // Create palette
     const palette = document.createElement("div");
     palette.className = "gemini-command-palette";
+    palette.setAttribute("tabindex", "-1"); // Make it focusable
 
     // Header
     const header = document.createElement("div");
@@ -233,7 +257,7 @@
     const shortcuts = document.createElement("div");
     shortcuts.className = "gemini-command-palette-shortcuts";
     shortcuts.textContent =
-      "Use ↑↓ or Ctrl-P/Ctrl-N to navigate, Enter to select, Esc to close";
+      "Use ↑↓ or Ctrl-P/Ctrl-N to navigate, 1-5 for quick access, Enter to select, Esc to close";
 
     header.appendChild(title);
     header.appendChild(shortcuts);
@@ -247,6 +271,10 @@
       item.className = "gemini-command-item";
       item.dataset.index = index;
       item.addEventListener("click", () => executeCommand(command));
+
+      const shortcutElement = document.createElement("span");
+      shortcutElement.className = "gemini-command-shortcut";
+      shortcutElement.textContent = command.shortcut;
 
       const icon = document.createElement("span");
       icon.className = "gemini-command-icon";
@@ -266,6 +294,7 @@
       content.appendChild(itemTitle);
       content.appendChild(description);
 
+      item.appendChild(shortcutElement);
       item.appendChild(icon);
       item.appendChild(content);
 
@@ -316,10 +345,37 @@
     // Force a reflow to ensure the element is rendered
     palette.offsetHeight;
 
+    // Focus the palette to trap keyboard events
+    const paletteDiv = palette.querySelector(".gemini-command-palette");
+    if (paletteDiv) {
+      // Create an invisible input to trap focus reliably
+      let focusTrap = palette.querySelector(".gemini-focus-trap");
+      if (!focusTrap) {
+        focusTrap = document.createElement("input");
+        focusTrap.className = "gemini-focus-trap";
+        focusTrap.style.position = "absolute";
+        focusTrap.style.opacity = "0";
+        focusTrap.style.width = "1px";
+        focusTrap.style.height = "1px";
+        focusTrap.style.pointerEvents = "none";
+        // Prevent auto-fill and mobile keyboard
+        focusTrap.setAttribute("readonly", "true");
+        palette.appendChild(focusTrap);
+      }
+
+      focusTrap.focus();
+      console.log("[Gemini Command Palette] Focused trap element");
+
+      // Keep focus within the palette
+      focusTrap.addEventListener("blur", () => {
+        if (isOpen && paletteElement) {
+          setTimeout(() => focusTrap.focus(), 10);
+        }
+      });
+    }
+
     updateSelection();
 
-    // Focus the palette for keyboard events
-    palette.focus();
     console.log("[Gemini Command Palette] Palette opened successfully");
 
     // Debug: Check if element is actually visible
@@ -339,8 +395,11 @@
     if (!isOpen) return;
 
     isOpen = false;
-    if (paletteElement && paletteElement.parentNode) {
-      paletteElement.parentNode.removeChild(paletteElement);
+    if (paletteElement) {
+      if (paletteElement.parentNode) {
+        paletteElement.parentNode.removeChild(paletteElement);
+      }
+      paletteElement = null;
     }
   }
 
@@ -349,7 +408,11 @@
 
     const items = paletteElement.querySelectorAll(".gemini-command-item");
     items.forEach((item, index) => {
-      item.classList.toggle("selected", index === selectedIndex);
+      const isSelected = index === selectedIndex;
+      item.classList.toggle("selected", isSelected);
+      if (isSelected) {
+        item.scrollIntoView({ block: "nearest" });
+      }
     });
   }
 
@@ -359,8 +422,15 @@
   }
 
   function executeSelectedCommand() {
+    console.log(
+      `[Gemini Command Palette] Executing selected command index: ${selectedIndex}`
+    );
     if (selectedIndex >= 0 && selectedIndex < commands.length) {
       executeCommand(commands[selectedIndex]);
+    } else {
+      console.log(
+        `[Gemini Command Palette] Invalid index ${selectedIndex} for commands length ${commands.length}`
+      );
     }
   }
 
@@ -431,11 +501,13 @@
     window.location.href = "https://gemini.google.com/app";
   }
 
-  function changeModel() {
-    console.log("[Gemini Command Palette] Changing model...");
+  function switchToModel(modelName) {
+    console.log(`[Gemini Command Palette] Switching to model: ${modelName}`);
 
     // Method 1: Look for model selector/dropdown button
     const selectors = [
+      "bard-mode-switcher button",
+      "bard-mode-switcher .mdc-button",
       '[data-test-id="model-selector"]',
       '[aria-label*="model"]',
       '[aria-label*="Model"]',
@@ -447,6 +519,7 @@
       '[data-test-id="conversation-model-switcher-button"]',
     ];
 
+    let modelButton = null;
     for (const selector of selectors) {
       const button = document.querySelector(selector);
       if (button) {
@@ -454,59 +527,117 @@
           "[Gemini Command Palette] Found model selector button:",
           selector
         );
-        button.click();
-        console.log("[Gemini Command Palette] Clicked model selector");
-        return;
+        modelButton = button;
+        break;
       }
     }
 
-    // Method 2: Look for any button/element containing "Gemini" text
-    const elements = document.querySelectorAll('button, [role="button"]');
-    for (const element of elements) {
-      const text = element.textContent || element.innerText || "";
-      if (text.includes("Gemini") || text.includes("model")) {
-        console.log(
-          "[Gemini Command Palette] Found potential model button with text:",
-          text
-        );
-        element.click();
-        console.log("[Gemini Command Palette] Clicked model button");
-        return;
+    if (!modelButton) {
+      // Method 2: Look for any button/element containing "Gemini" text
+      const elements = document.querySelectorAll('button, [role="button"]');
+      for (const element of elements) {
+        const text = element.textContent || element.innerText || "";
+        if (text.includes("Gemini") || text.includes("model")) {
+          console.log(
+            "[Gemini Command Palette] Found potential model button with text:",
+            text
+          );
+          modelButton = element;
+          break;
+        }
       }
     }
 
-    // Method 3: Look for settings or preferences that might contain model selection
-    const settingsSelectors = [
-      '[aria-label*="Settings"]',
-      '[aria-label*="settings"]',
-      'button[aria-label*="Settings"]',
-      ".settings-button",
-      '[data-test-id="settings"]',
-    ];
+    if (!modelButton) {
+      console.log("[Gemini Command Palette] No model selector found");
+      alert(
+        "Model selector not found. Try looking for a model/settings button in the Gemini interface."
+      );
+      return;
+    }
 
-    for (const selector of settingsSelectors) {
-      const button = document.querySelector(selector);
-      if (button) {
-        console.log(
-          "[Gemini Command Palette] Found settings button, opening:",
-          selector
-        );
-        button.click();
-        console.log(
-          "[Gemini Command Palette] Opened settings for model selection"
+    // Click the model selector button to open the dropdown
+    modelButton.click();
+    console.log("[Gemini Command Palette] Opened model selector dropdown");
+
+    // Wait for the dropdown menu or bottom sheet to appear and find the specific model option
+    setTimeout(() => {
+      const menuSelectors = [
+        "mat-bottom-sheet-container", // New bottom sheet for model selection
+        '[role="menu"]',
+        '[role="listbox"]',
+        ".mat-mdc-menu-content",
+        ".mdc-menu",
+        '[aria-expanded="true"] [role="menu"]',
+        '[aria-expanded="true"] [role="listbox"]',
+        ".cdk-overlay-container mat-bottom-sheet-container", // Bottom sheet in overlay
+      ];
+
+      let menuContainer = null;
+      for (const selector of menuSelectors) {
+        const menu = document.querySelector(selector);
+        if (menu) {
+          console.log(
+            `[Gemini Command Palette] Found menu container: ${selector}`
+          );
+          menuContainer = menu;
+          break;
+        }
+      }
+
+      if (!menuContainer) {
+        console.log("[Gemini Command Palette] Menu container not found");
+        alert(
+          `Could not find model menu. Please try selecting ${modelName} manually.`
         );
         return;
       }
-    }
 
-    console.log(
-      "[Gemini Command Palette] No model selector found. The model selection UI might not be available or uses different selectors."
-    );
+      // Look for the specific model option in the menu/bottom sheet
+      const menuItems = menuContainer.querySelectorAll(
+        'button, [role="button"], [role="menuitem"], [role="option"], .model-option, [data-model]'
+      );
+      console.log(
+        `[Gemini Command Palette] Found ${menuItems.length} menu items`
+      );
 
-    // Show a helpful message to the user
-    alert(
-      "Model selector not found. Try looking for a model/settings button in the Gemini interface."
-    );
+      for (const item of menuItems) {
+        const text = item.textContent || item.innerText || "";
+        const ariaLabel = item.getAttribute("aria-label") || "";
+        const dataModel = item.getAttribute("data-model") || "";
+
+        console.log(
+          `[Gemini Command Palette] Checking menu item: "${text}" (aria-label: "${ariaLabel}", data-model: "${dataModel}")`
+        );
+
+        // Check for exact matches or contains matches
+        const matches =
+          text.toLowerCase().includes(modelName.toLowerCase()) ||
+          ariaLabel.toLowerCase().includes(modelName.toLowerCase()) ||
+          dataModel.toLowerCase().includes(modelName.toLowerCase()) ||
+          (modelName === "Fast" &&
+            (text.includes("Fast") || text.includes("Gemini 3"))) ||
+          (modelName === "Thinking" && text.includes("Thinking")) ||
+          (modelName === "Pro" &&
+            (text.includes("Pro") || text.includes("advanced")));
+
+        if (matches) {
+          console.log(
+            `[Gemini Command Palette] Found matching model: "${text}"`
+          );
+          item.click();
+          console.log(`[Gemini Command Palette] Switched to ${modelName}`);
+          return;
+        }
+      }
+
+      console.log(
+        `[Gemini Command Palette] Model "${modelName}" not found in menu`
+      );
+      alert(
+        `Model "${modelName}" not found in the menu. Available models may have changed.`
+      );
+    }, 300); // Wait 300ms for menu/bottom sheet to appear
   }
 
   function deleteCurrentChat() {
@@ -670,26 +801,6 @@
     }, 300);
   }
 
-  function startNewTempChat() {
-    console.log("[Gemini Command Palette] Starting new temporary chat...");
-    const tempChatButton = document.querySelector(
-      '[data-test-id="temp-chat-button"]'
-    );
-    if (tempChatButton) {
-      console.log(
-        "[Gemini Command Palette] Found temporary chat button:",
-        tempChatButton
-      );
-      tempChatButton.click();
-      console.log("[Gemini Command Palette] Clicked temporary chat button");
-    } else {
-      console.log("[Gemini Command Palette] No temporary chat button found.");
-      alert(
-        "Could not find the 'Temporary chat' button. The UI might have changed."
-      );
-    }
-  }
-
   // Keyboard event handler
   function handleKeyDown(event) {
     console.log("[Gemini Command Palette] Key pressed:", {
@@ -729,7 +840,67 @@
     }
 
     // Handle palette navigation
-    if (!isOpen) return;
+    if (!isOpen) {
+      console.log(
+        "[Gemini Command Palette] Key ignored because palette is closed"
+      );
+      return;
+    }
+
+    // Handle number keys for quick access (top row and numpad)
+    const isDigitKey = /^[1-9]$/.test(event.key);
+    const digitFromCode =
+      event.code && /^Digit[1-9]$/.test(event.code)
+        ? event.code.slice(-1)
+        : event.code && /^Numpad[1-9]$/.test(event.code)
+        ? event.code.slice(-1)
+        : null;
+    const digit = isDigitKey ? event.key : digitFromCode;
+
+    console.log("[Gemini Command Palette] Digit detection:", {
+      key: event.key,
+      code: event.code,
+      isDigitKey,
+      digitFromCode,
+      digit,
+    });
+
+    if (
+      digit &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      const num = parseInt(digit, 10);
+      console.log(`[Gemini Command Palette] Detected number shortcut: ${num}`);
+
+      if (num > 0 && num <= commands.length) {
+        console.log(
+          `[Gemini Command Palette] Number ${num} is valid command index`
+        );
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        // Visual feedback: select the item first
+        selectedIndex = num - 1;
+        updateSelection();
+
+        // Execute immediately
+        if (isOpen) {
+          console.log(
+            "[Gemini Command Palette] Executing selected command from shortcut"
+          );
+          executeSelectedCommand();
+        } else {
+          console.log(
+            "[Gemini Command Palette] Palette closed unexpectedly before execution"
+          );
+        }
+        return;
+      }
+    }
 
     switch (event.key) {
       case "Escape":
@@ -762,9 +933,11 @@
 
   // Initialize
   function init() {
-    console.log("[Gemini Command Palette] Initializing...");
-    document.addEventListener("keydown", handleKeyDown, true); // Use capture phase
-    console.log("[Gemini Command Palette] Added keydown event listener");
+    console.log("[Gemini Command Palette] v1.3.4 Initializing...");
+    window.addEventListener("keydown", handleKeyDown, true); // Use capture phase on window
+    console.log(
+      "[Gemini Command Palette] Added keydown event listener to window"
+    );
 
     // Add visual indicator that command palette is available
     console.log("[Gemini Command Palette] Loaded! Press Ctrl/Cmd + K to open.");
