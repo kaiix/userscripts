@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         X/Twitter Timeline Last Read Position Saver (Smooth)
+// @name         X/Twitter Timeline Last Read Position Saver (Elevator Glide)
 // @namespace    http://tampermonkey.net/
-// @version      2.1
-// @description  Adds a floating button to smoothly hunt down and jump to your last read tweet.
+// @version      2.3
+// @description  Adds a floating button to hunt down your last read tweet with long, smooth sweeps.
 // @author       Gemini
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -12,12 +12,18 @@
 (function() {
     'use strict';
 
+    // --- SPEED SETTINGS ---
+    // 3.0 = Sweeps past 3 full screens of tweets in one go.
+    // 500 = Waits half a second to let the smooth animation finish and X to render new tweets.
+    const SCROLL_DISTANCE_MULTIPLIER = 3.0; 
+    const SCROLL_DELAY_MS = 500;            
+
     const STORAGE_PREFIX = 'x_last_read_';
     const MAX_TWEETS_TO_SCAN = 2000;
-
+    
     let scrollTimeout;
     let isRestoring = false;
-    let hasUnusedSave = false;
+    let hasUnusedSave = false; 
     let floatingBtn = null;
 
     // --- Core Logic ---
@@ -27,7 +33,7 @@
         if (window.location.pathname === '/home') {
             const activeTab = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
             if (activeTab) {
-                key += '_' + activeTab.innerText.trim().replace(/\n/g, '');
+                key += '_' + activeTab.innerText.trim().replace(/\n/g, ''); 
             }
         }
         return key;
@@ -51,30 +57,30 @@
     }
 
     function savePosition() {
-        if (isRestoring || hasUnusedSave) return;
+        if (isRestoring || hasUnusedSave) return; 
 
         const key = getTimelineKey();
         const tweetId = getTopVisibleTweetId();
-
+        
         if (key && tweetId) {
             localStorage.setItem(STORAGE_PREFIX + key, tweetId);
         }
     }
 
-    // --- The Smoother Hunting Mechanism ---
+    // --- The Long-Sweep Hunting Mechanism ---
 
     async function jumpToLastRead() {
         const key = getTimelineKey();
         const targetId = localStorage.getItem(STORAGE_PREFIX + key);
-
+        
         if (!targetId) return;
 
         isRestoring = true;
-        hasUnusedSave = false;
+        hasUnusedSave = false; 
         const seenTweets = new Set();
         let found = false;
-
-        updateButtonUI('Searching...', '#f5a623');
+        
+        updateButtonUI('Searching...', '#f5a623'); 
 
         // Hunting Loop
         while (seenTweets.size < MAX_TWEETS_TO_SCAN) {
@@ -88,13 +94,12 @@
             if (link) {
                 const tweet = link.closest('article');
                 if (tweet) {
-                    // Final snap to the exact tweet
                     tweet.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
+                    
                     tweet.style.transition = 'background-color 0.4s ease';
                     tweet.style.backgroundColor = 'rgba(29, 155, 240, 0.25)';
                     setTimeout(() => { tweet.style.backgroundColor = 'transparent'; }, 2500);
-
+                    
                     found = true;
                     break;
                 }
@@ -113,27 +118,25 @@
 
             if (seenTweets.size >= MAX_TWEETS_TO_SCAN) break;
 
-            // SMOOTH SCROLLING UPDATE:
-            // Glide down slightly less than one full screen, which gives X's engine
-            // time to trigger the next batch of tweets natively without stuttering.
+            // LONG SWEEP SMOOTH SCROLLING
             window.scrollBy({
-                top: window.innerHeight * 0.85,
+                top: window.innerHeight * SCROLL_DISTANCE_MULTIPLIER, 
                 left: 0,
                 behavior: 'smooth'
             });
-
-            // Reduced wait time for a faster, more continuous glide
-            await new Promise(resolve => setTimeout(resolve, 450));
+            
+            // Wait for the animation to cleanly finish before firing the next one
+            await new Promise(resolve => setTimeout(resolve, SCROLL_DELAY_MS)); 
         }
 
         // --- Post-Hunt Cleanup ---
         if (found) {
-            updateButtonUI('Found it!', '#17bf63');
+            updateButtonUI('Found it!', '#17bf63'); 
             setTimeout(removeButton, 2000);
         } else {
-            updateButtonUI('Tweet missing or deleted', '#e0245e');
+            updateButtonUI('Tweet missing or deleted', '#e0245e'); 
             setTimeout(removeButton, 3000);
-            localStorage.removeItem(STORAGE_PREFIX + key);
+            localStorage.removeItem(STORAGE_PREFIX + key); 
         }
 
         setTimeout(() => { isRestoring = false; }, 1000);
@@ -147,7 +150,7 @@
         floatingBtn = document.createElement('div');
         floatingBtn.id = 'x-jump-btn';
         floatingBtn.innerText = '↓ Jump to Last Read';
-
+        
         Object.assign(floatingBtn.style, {
             position: 'fixed',
             bottom: '24px',
@@ -175,9 +178,9 @@
         closeBtn.style.marginLeft = '10px';
         closeBtn.style.color = 'rgba(255,255,255,0.7)';
         closeBtn.onclick = (e) => {
-            e.stopPropagation();
+            e.stopPropagation(); 
             removeButton();
-            hasUnusedSave = false;
+            hasUnusedSave = false; 
         };
         floatingBtn.appendChild(closeBtn);
 
@@ -203,7 +206,7 @@
         const savedTweetId = localStorage.getItem(STORAGE_PREFIX + key);
 
         if (savedTweetId) {
-            hasUnusedSave = true;
+            hasUnusedSave = true; 
             createButton();
         } else {
             hasUnusedSave = false;
@@ -215,7 +218,7 @@
 
     window.addEventListener('scroll', () => {
         clearTimeout(scrollTimeout);
-        scrollTimeout = setTimeout(savePosition, 500);
+        scrollTimeout = setTimeout(savePosition, 500); 
     }, { passive: true });
 
     document.addEventListener('click', (e) => {
