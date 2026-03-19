@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         X/Twitter Timeline Last Read Position Saver (Advanced)
+// @name         X/Twitter Timeline Last Read Position Saver (Smooth)
 // @namespace    http://tampermonkey.net/
-// @version      2.0
-// @description  Adds a floating button to hunt down and jump to your last read tweet.
+// @version      2.1
+// @description  Adds a floating button to smoothly hunt down and jump to your last read tweet.
 // @author       Gemini
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -17,7 +17,7 @@
 
     let scrollTimeout;
     let isRestoring = false;
-    let hasUnusedSave = false; // Prevents overwriting save before jumping
+    let hasUnusedSave = false;
     let floatingBtn = null;
 
     // --- Core Logic ---
@@ -51,7 +51,6 @@
     }
 
     function savePosition() {
-        // Don't save if we are actively hunting or if the user hasn't clicked "Jump" yet
         if (isRestoring || hasUnusedSave) return;
 
         const key = getTimelineKey();
@@ -62,7 +61,7 @@
         }
     }
 
-    // --- The Hunting Mechanism ---
+    // --- The Smoother Hunting Mechanism ---
 
     async function jumpToLastRead() {
         const key = getTimelineKey();
@@ -71,29 +70,27 @@
         if (!targetId) return;
 
         isRestoring = true;
-        hasUnusedSave = false; // Now we can allow saving again once we finish
+        hasUnusedSave = false;
         const seenTweets = new Set();
         let found = false;
 
-        updateButtonUI('Searching...', '#f5a623'); // Orange for searching
+        updateButtonUI('Searching...', '#f5a623');
 
         // Hunting Loop
         while (seenTweets.size < MAX_TWEETS_TO_SCAN) {
-            // 1. Abort if user switched tabs/pages while searching
             if (getTimelineKey() !== key) {
                 removeButton();
                 isRestoring = false;
                 return;
             }
 
-            // 2. Check if the target tweet is currently in the DOM
             const link = document.querySelector(`a[href*="/status/${targetId}"]`);
             if (link) {
                 const tweet = link.closest('article');
                 if (tweet) {
+                    // Final snap to the exact tweet
                     tweet.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
-                    // Highlight the found tweet
                     tweet.style.transition = 'background-color 0.4s ease';
                     tweet.style.backgroundColor = 'rgba(29, 155, 240, 0.25)';
                     setTimeout(() => { tweet.style.backgroundColor = 'transparent'; }, 2500);
@@ -103,7 +100,6 @@
                 }
             }
 
-            // 3. Keep track of how many unique tweets we've scanned
             const currentTweets = document.querySelectorAll('article[data-testid="tweet"]');
             currentTweets.forEach(t => {
                 const l = t.querySelector('a[href*="/status/"]');
@@ -113,26 +109,30 @@
                 }
             });
 
-            // Update UI with progress
             updateButtonUI(`Scanning... (${seenTweets.size}/${MAX_TWEETS_TO_SCAN})`, '#f5a623');
 
             if (seenTweets.size >= MAX_TWEETS_TO_SCAN) break;
 
-            // 4. Scroll down to force X to load more tweets
-            window.scrollBy(0, window.innerHeight * 1.5);
+            // SMOOTH SCROLLING UPDATE:
+            // Glide down slightly less than one full screen, which gives X's engine
+            // time to trigger the next batch of tweets natively without stuttering.
+            window.scrollBy({
+                top: window.innerHeight * 0.85,
+                left: 0,
+                behavior: 'smooth'
+            });
 
-            // Wait for X network request and DOM render
-            await new Promise(resolve => setTimeout(resolve, 800));
+            // Reduced wait time for a faster, more continuous glide
+            await new Promise(resolve => setTimeout(resolve, 450));
         }
 
         // --- Post-Hunt Cleanup ---
         if (found) {
-            updateButtonUI('Found it!', '#17bf63'); // Green
+            updateButtonUI('Found it!', '#17bf63');
             setTimeout(removeButton, 2000);
         } else {
-            updateButtonUI('Tweet missing or deleted', '#e0245e'); // Red
+            updateButtonUI('Tweet missing or deleted', '#e0245e');
             setTimeout(removeButton, 3000);
-            // Clear the bad save so it doesn't try again next time
             localStorage.removeItem(STORAGE_PREFIX + key);
         }
 
@@ -148,12 +148,11 @@
         floatingBtn.id = 'x-jump-btn';
         floatingBtn.innerText = '↓ Jump to Last Read';
 
-        // Styling
         Object.assign(floatingBtn.style, {
             position: 'fixed',
             bottom: '24px',
             right: '24px',
-            backgroundColor: 'rgba(29, 155, 240, 0.95)', // Twitter Blue
+            backgroundColor: 'rgba(29, 155, 240, 0.95)',
             color: 'white',
             padding: '12px 20px',
             borderRadius: '9999px',
@@ -167,22 +166,18 @@
             userSelect: 'none'
         });
 
-        // Add hover effect
         floatingBtn.onmouseenter = () => floatingBtn.style.transform = 'scale(1.05)';
         floatingBtn.onmouseleave = () => floatingBtn.style.transform = 'scale(1)';
-
-        // Click action
         floatingBtn.onclick = jumpToLastRead;
 
-        // Add close button (X) inside the floating button to dismiss it manually
         const closeBtn = document.createElement('span');
         closeBtn.innerText = ' ✕';
         closeBtn.style.marginLeft = '10px';
         closeBtn.style.color = 'rgba(255,255,255,0.7)';
         closeBtn.onclick = (e) => {
-            e.stopPropagation(); // Don't trigger the jump
+            e.stopPropagation();
             removeButton();
-            hasUnusedSave = false; // Allow saving again
+            hasUnusedSave = false;
         };
         floatingBtn.appendChild(closeBtn);
 
@@ -208,7 +203,7 @@
         const savedTweetId = localStorage.getItem(STORAGE_PREFIX + key);
 
         if (savedTweetId) {
-            hasUnusedSave = true; // Block overwriting the save temporarily
+            hasUnusedSave = true;
             createButton();
         } else {
             hasUnusedSave = false;
@@ -218,13 +213,11 @@
 
     // --- Event Listeners ---
 
-    // Save position as you scroll
     window.addEventListener('scroll', () => {
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(savePosition, 500);
     }, { passive: true });
 
-    // Detect tab/page clicks
     document.addEventListener('click', (e) => {
         const tab = e.target.closest('[role="tab"], a[href^="/"]');
         if (tab) {
@@ -232,7 +225,6 @@
         }
     });
 
-    // Initial load check
     window.addEventListener('load', () => {
         setTimeout(checkAndShowButton, 1000);
     });
