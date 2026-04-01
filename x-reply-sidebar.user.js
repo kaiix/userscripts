@@ -29,6 +29,8 @@
   let loadingMore = false;
   let scrollObserver = null;
   let resizing = false;
+  let currentMainTweet = null;
+  let showOriginalTweet = false;
 
   // --- Grab X's auth tokens from cookies/meta for API calls ---
   function getCookie(name) {
@@ -300,6 +302,34 @@
         color: rgb(231, 233, 234);
       }
 
+      /* Original tweet container (toggle) */
+      .xrs-original-tweet {
+        border-bottom: 1px solid rgb(47, 51, 54);
+      }
+
+      /* Toggle button style */
+      .xrs-toggle-btn {
+        background: transparent;
+        border: none;
+        color: rgb(113, 118, 123);
+        cursor: pointer;
+        padding: 6px 8px;
+        border-radius: 9999px;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background-color 0.2s, color 0.2s;
+        font-family: inherit;
+      }
+      .xrs-toggle-btn:hover {
+        background: rgba(231, 233, 234, 0.1);
+        color: rgb(231, 233, 234);
+      }
+      .xrs-toggle-btn.active {
+        color: rgb(29, 155, 240);
+      }
+
       /* Reply tweet slightly indented */
       .xrs-reply {
         padding-left: 16px;
@@ -355,9 +385,15 @@
     hint.className = "xrs-hint";
     hint.textContent = "Esc";
 
+    const toggleOrigBtn = document.createElement("button");
+    toggleOrigBtn.className = "xrs-toggle-btn";
+    toggleOrigBtn.innerHTML = "📌";
+    toggleOrigBtn.title = "Show original tweet";
+    toggleOrigBtn.addEventListener("click", toggleOriginalTweet);
+
     const openBtn = document.createElement("button");
     openBtn.innerHTML = "↗";
-    openBtn.title = "Open in main view";
+    openBtn.title = "Open in new window";
     openBtn.addEventListener("click", openInMainView);
 
     const closeBtn = document.createElement("button");
@@ -365,7 +401,7 @@
     closeBtn.title = "Close panel";
     closeBtn.addEventListener("click", closePanel);
 
-    actions.append(hint, openBtn, closeBtn);
+    actions.append(toggleOrigBtn, hint, openBtn, closeBtn);
     header.append(title, actions);
     panel.appendChild(header);
 
@@ -388,10 +424,21 @@
   }
 
   function openInMainView() {
-    const url = currentTweetUrl;
-    closePanel();
-    if (url) {
-      window.location.href = url;
+    if (currentTweetUrl) {
+      window.open(currentTweetUrl, "_blank");
+    }
+  }
+
+  function toggleOriginalTweet() {
+    showOriginalTweet = !showOriginalTweet;
+    const btn = panel?.querySelector(".xrs-toggle-btn");
+    if (btn) {
+      btn.classList.toggle("active", showOriginalTweet);
+      btn.title = showOriginalTweet ? "Hide original tweet" : "Show original tweet";
+    }
+    const container = panel?.querySelector(".xrs-original-tweet");
+    if (container) {
+      container.style.display = showOriginalTweet ? "" : "none";
     }
   }
 
@@ -787,6 +834,16 @@
       content.querySelector(".xrs-sentinel")?.remove();
     } else {
       content.innerHTML = "";
+
+      // Render original tweet (hidden by default)
+      if (main) {
+        currentMainTweet = main;
+        const origContainer = document.createElement("div");
+        origContainer.className = "xrs-original-tweet";
+        origContainer.style.display = showOriginalTweet ? "" : "none";
+        origContainer.appendChild(renderTweet(main, true));
+        content.appendChild(origContainer);
+      }
     }
 
     if (replies.length > 0) {
@@ -802,6 +859,13 @@
     }
 
     // Add scroll sentinel for infinite scroll
+    // Stop pagination if append returned no new replies (all loaded)
+    if (append && replies.length === 0) {
+      currentCursor = null;
+      loadingMore = false;
+      return;
+    }
+
     currentCursor = cursor || null;
     loadingMore = false;
 
@@ -854,6 +918,15 @@
     currentTweetId = tweetId;
     currentTweetUrl = url;
     currentCursor = null;
+    currentMainTweet = null;
+    showOriginalTweet = false;
+
+    // Reset toggle button state
+    const toggleBtn = panel.querySelector(".xrs-toggle-btn");
+    if (toggleBtn) {
+      toggleBtn.classList.remove("active");
+      toggleBtn.title = "Show original tweet";
+    }
 
     // Update header title
     const titleEl = panel.querySelector("#xrs-header-title");
@@ -934,6 +1007,10 @@
     // Must be inside a tweet
     const tweet = e.target.closest('article[data-testid="tweet"]');
     if (!tweet) return;
+
+    // Let quote tweet clicks pass through to X's default navigation
+    const quoteContainer = e.target.closest('div[role="link"][tabindex="0"]');
+    if (quoteContainer && tweet.contains(quoteContainer)) return;
 
     // Allow non-status links to work normally
     const clickedLink = e.target.closest("a");
