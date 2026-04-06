@@ -1,235 +1,388 @@
 // ==UserScript==
-// @name         X/Twitter Timeline Last Read Position Saver (Elevator Glide)
+// @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      2.3
-// @description  Adds a floating button to hunt down your last read tweet with long, smooth sweeps.
-// @author       Gemini
+// @version      3.0
+// @description  Remember where you stopped reading. Shows new tweet count with one-click jump back.
+// @author       You
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @grant        none
 // ==/UserScript==
 
-(function() {
-    'use strict';
+(function () {
+  "use strict";
 
-    // --- SPEED SETTINGS ---
-    // 3.0 = Sweeps past 3 full screens of tweets in one go.
-    // 500 = Waits half a second to let the smooth animation finish and X to render new tweets.
-    const SCROLL_DISTANCE_MULTIPLIER = 3.0; 
-    const SCROLL_DELAY_MS = 500;            
+  // --- Config ---
+  const SWEEP_SCREENS = 3.0;
+  const SWEEP_DELAY = 500;
+  const PREFIX = "x_pos_";
+  const MAX_SCAN = 2000;
+  const SCAN_MS = 800;
 
-    const STORAGE_PREFIX = 'x_last_read_';
-    const MAX_TWEETS_TO_SCAN = 2000;
-    
-    let scrollTimeout;
-    let isRestoring = false;
-    let hasUnusedSave = false; 
-    let floatingBtn = null;
+  // --- State ---
+  let jumping = false;
+  let dismissed = false;
+  let anchorId = null; // snapshot of saved position for jump & auto-save boundary
+  let bar = null;
+  let scanTimer = null;
+  let scrollTimer = null;
+  let prevKey = null;
+  const allSeen = new Set(); // all tweet IDs observed this session
 
-    // --- Core Logic ---
+  // =========================
+  //  Helpers
+  // =========================
 
-    function getTimelineKey() {
-        let key = window.location.pathname;
-        if (window.location.pathname === '/home') {
-            const activeTab = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
-            if (activeTab) {
-                key += '_' + activeTab.innerText.trim().replace(/\n/g, ''); 
-            }
-        }
-        return key;
-    }
-
-    function getTopVisibleTweetId() {
-        const tweets = document.querySelectorAll('article[data-testid="tweet"]');
-        const headerOffset = 80;
-
-        for (const tweet of tweets) {
-            const rect = tweet.getBoundingClientRect();
-            if (rect.top >= headerOffset || rect.bottom > headerOffset + 50) {
-                const link = tweet.querySelector('a[href*="/status/"]');
-                if (link) {
-                    const match = link.href.match(/\/status\/(\d+)/);
-                    if (match) return match[1];
-                }
-            }
-        }
-        return null;
-    }
-
-    function savePosition() {
-        if (isRestoring || hasUnusedSave) return; 
-
-        const key = getTimelineKey();
-        const tweetId = getTopVisibleTweetId();
-        
-        if (key && tweetId) {
-            localStorage.setItem(STORAGE_PREFIX + key, tweetId);
-        }
-    }
-
-    // --- The Long-Sweep Hunting Mechanism ---
-
-    async function jumpToLastRead() {
-        const key = getTimelineKey();
-        const targetId = localStorage.getItem(STORAGE_PREFIX + key);
-        
-        if (!targetId) return;
-
-        isRestoring = true;
-        hasUnusedSave = false; 
-        const seenTweets = new Set();
-        let found = false;
-        
-        updateButtonUI('Searching...', '#f5a623'); 
-
-        // Hunting Loop
-        while (seenTweets.size < MAX_TWEETS_TO_SCAN) {
-            if (getTimelineKey() !== key) {
-                removeButton();
-                isRestoring = false;
-                return;
-            }
-
-            const link = document.querySelector(`a[href*="/status/${targetId}"]`);
-            if (link) {
-                const tweet = link.closest('article');
-                if (tweet) {
-                    tweet.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    
-                    tweet.style.transition = 'background-color 0.4s ease';
-                    tweet.style.backgroundColor = 'rgba(29, 155, 240, 0.25)';
-                    setTimeout(() => { tweet.style.backgroundColor = 'transparent'; }, 2500);
-                    
-                    found = true;
-                    break;
-                }
-            }
-
-            const currentTweets = document.querySelectorAll('article[data-testid="tweet"]');
-            currentTweets.forEach(t => {
-                const l = t.querySelector('a[href*="/status/"]');
-                if (l) {
-                    const match = l.href.match(/\/status\/(\d+)/);
-                    if (match) seenTweets.add(match[1]);
-                }
-            });
-
-            updateButtonUI(`Scanning... (${seenTweets.size}/${MAX_TWEETS_TO_SCAN})`, '#f5a623');
-
-            if (seenTweets.size >= MAX_TWEETS_TO_SCAN) break;
-
-            // LONG SWEEP SMOOTH SCROLLING
-            window.scrollBy({
-                top: window.innerHeight * SCROLL_DISTANCE_MULTIPLIER, 
-                left: 0,
-                behavior: 'smooth'
-            });
-            
-            // Wait for the animation to cleanly finish before firing the next one
-            await new Promise(resolve => setTimeout(resolve, SCROLL_DELAY_MS)); 
-        }
-
-        // --- Post-Hunt Cleanup ---
-        if (found) {
-            updateButtonUI('Found it!', '#17bf63'); 
-            setTimeout(removeButton, 2000);
+  function key() {
+    let k = location.pathname;
+    if (k === "/home") {
+      const t = document.querySelector(
+        '[role="tablist"] [role="tab"][aria-selected="true"]',
+      );
+      if (t) {
+        // Pinned lists have href like /i/lists/{id} — use list ID for
+        // a stable key that survives list renames and locale changes.
+        const href =
+          t.getAttribute("href") || t.closest("a")?.getAttribute("href") || "";
+        const listMatch = href.match(/\/i\/lists\/(\d+)/);
+        if (listMatch) {
+          k += "_list_" + listMatch[1];
         } else {
-            updateButtonUI('Tweet missing or deleted', '#e0245e'); 
-            setTimeout(removeButton, 3000);
-            localStorage.removeItem(STORAGE_PREFIX + key); 
+          k += "_" + t.textContent.trim().replace(/\s+/g, "_");
         }
+      }
+    }
+    return k;
+  }
 
-        setTimeout(() => { isRestoring = false; }, 1000);
+  function idOf(article) {
+    return article
+      .querySelector('a[href*="/status/"]')
+      ?.href.match(/\/status\/(\d+)/)?.[1];
+  }
+
+  function topId() {
+    for (const a of document.querySelectorAll('article[data-testid="tweet"]')) {
+      const r = a.getBoundingClientRect();
+      if (r.top >= 80 || r.bottom > 130) {
+        const id = idOf(a);
+        if (id) return id;
+      }
+    }
+    return null;
+  }
+
+  function saved() {
+    return localStorage.getItem(PREFIX + key());
+  }
+
+  function persist(id) {
+    localStorage.setItem(PREFIX + key(), id);
+  }
+
+  // =========================
+  //  Position tracking
+  // =========================
+
+  function scanVisible() {
+    for (const el of document.querySelectorAll(
+      'article[data-testid="tweet"]',
+    )) {
+      const id = idOf(el);
+      if (id) allSeen.add(id);
+    }
+  }
+
+  function startScan() {
+    stopScan();
+    scanTimer = setInterval(() => {
+      if (!jumping) {
+        scanVisible();
+        refreshLabel();
+      }
+    }, SCAN_MS);
+  }
+
+  function stopScan() {
+    if (scanTimer) {
+      clearInterval(scanTimer);
+      scanTimer = null;
+    }
+  }
+
+  // =========================
+  //  Save logic
+  // =========================
+
+  function onScroll() {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => {
+      if (jumping) return;
+      const id = topId();
+      if (id) {
+        // Auto-save only when scrolling past/below the anchor
+        // (reading older content), or on a fresh timeline (no
+        // anchor yet). This preserves the unread boundary —
+        // reading new tweets above the anchor won't overwrite it.
+        try {
+          if (!anchorId || BigInt(id) <= BigInt(anchorId)) {
+            persist(id);
+          }
+        } catch {
+          persist(id);
+        }
+      }
+      scanVisible();
+      refreshLabel();
+    }, 400);
+  }
+
+  function manualSave() {
+    const id = topId();
+    if (!id) return;
+    persist(id);
+    anchorId = id;
+    refreshLabel();
+    flash("✓ Saved");
+  }
+
+  // =========================
+  //  Jump
+  // =========================
+
+  async function jump() {
+    const k = key();
+    const target = anchorId; // use stable anchor, not live saved()
+    if (!target || jumping) return;
+
+    jumping = true;
+    const visited = new Set();
+    let found = false;
+
+    setLabel("Searching…", "#f5a623");
+    setJumpEnabled(false);
+
+    while (visited.size < MAX_SCAN) {
+      if (key() !== k) break;
+
+      const link = document.querySelector(`a[href*="/status/${target}"]`);
+      if (link) {
+        const article = link.closest("article");
+        if (article) {
+          article.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
+          article.style.transition = "background-color 0.4s ease";
+          article.style.backgroundColor = "rgba(29, 155, 240, 0.25)";
+          setTimeout(() => (article.style.backgroundColor = ""), 2500);
+          found = true;
+          break;
+        }
+      }
+
+      for (const el of document.querySelectorAll(
+        'article[data-testid="tweet"]',
+      )) {
+        const id = idOf(el);
+        if (id) {
+          visited.add(id);
+          allSeen.add(id);
+        }
+      }
+
+      setLabel(`Scanning… ${visited.size}`, "#f5a623");
+      if (visited.size >= MAX_SCAN) break;
+
+      window.scrollBy({
+        top: innerHeight * SWEEP_SCREENS,
+        behavior: "smooth",
+      });
+      await new Promise((r) => setTimeout(r, SWEEP_DELAY));
     }
 
-    // --- UI Button Logic ---
+    setJumpEnabled(true);
 
-    function createButton() {
-        if (document.getElementById('x-jump-btn')) return;
-
-        floatingBtn = document.createElement('div');
-        floatingBtn.id = 'x-jump-btn';
-        floatingBtn.innerText = '↓ Jump to Last Read';
-        
-        Object.assign(floatingBtn.style, {
-            position: 'fixed',
-            bottom: '24px',
-            right: '24px',
-            backgroundColor: 'rgba(29, 155, 240, 0.95)',
-            color: 'white',
-            padding: '12px 20px',
-            borderRadius: '9999px',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-            fontSize: '15px',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-            zIndex: '9999',
-            transition: 'all 0.2s ease',
-            userSelect: 'none'
-        });
-
-        floatingBtn.onmouseenter = () => floatingBtn.style.transform = 'scale(1.05)';
-        floatingBtn.onmouseleave = () => floatingBtn.style.transform = 'scale(1)';
-        floatingBtn.onclick = jumpToLastRead;
-
-        const closeBtn = document.createElement('span');
-        closeBtn.innerText = ' ✕';
-        closeBtn.style.marginLeft = '10px';
-        closeBtn.style.color = 'rgba(255,255,255,0.7)';
-        closeBtn.onclick = (e) => {
-            e.stopPropagation(); 
-            removeButton();
-            hasUnusedSave = false; 
-        };
-        floatingBtn.appendChild(closeBtn);
-
-        document.body.appendChild(floatingBtn);
+    if (found) {
+      flash("✓ Found!");
+      anchorId = target; // reset anchor to where we jumped
+      // allSeen keeps accumulating for position tracking
+      setTimeout(() => {
+        jumping = false;
+        refreshLabel();
+      }, 1500);
+    } else {
+      setLabel("✗ Not found", "#e0245e");
+      localStorage.removeItem(PREFIX + k);
+      setTimeout(() => {
+        jumping = false;
+        check();
+      }, 2500);
     }
+  }
 
-    function updateButtonUI(text, bgColor) {
-        if (floatingBtn) {
-            floatingBtn.innerText = text;
-            if (bgColor) floatingBtn.style.backgroundColor = bgColor;
-        }
-    }
+  // =========================
+  //  UI
+  // =========================
 
-    function removeButton() {
-        if (floatingBtn) {
-            floatingBtn.remove();
-            floatingBtn = null;
-        }
-    }
+  function build() {
+    if (bar) return;
 
-    function checkAndShowButton() {
-        const key = getTimelineKey();
-        const savedTweetId = localStorage.getItem(STORAGE_PREFIX + key);
-
-        if (savedTweetId) {
-            hasUnusedSave = true; 
-            createButton();
-        } else {
-            hasUnusedSave = false;
-            removeButton();
-        }
-    }
-
-    // --- Event Listeners ---
-
-    window.addEventListener('scroll', () => {
-        clearTimeout(scrollTimeout);
-        scrollTimeout = setTimeout(savePosition, 500); 
-    }, { passive: true });
-
-    document.addEventListener('click', (e) => {
-        const tab = e.target.closest('[role="tab"], a[href^="/"]');
-        if (tab) {
-            setTimeout(checkAndShowButton, 600);
-        }
+    bar = document.createElement("div");
+    bar.id = "x-pos-bar";
+    Object.assign(bar.style, {
+      position: "fixed",
+      bottom: "20px",
+      right: "20px",
+      display: "flex",
+      alignItems: "center",
+      gap: "6px",
+      background: "rgba(0,0,0,0.85)",
+      color: "#fff",
+      padding: "8px 12px",
+      borderRadius: "14px",
+      fontFamily:
+        '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif',
+      fontSize: "13px",
+      fontWeight: "500",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
+      backdropFilter: "blur(16px)",
+      border: "1px solid rgba(255,255,255,0.08)",
+      zIndex: "9999",
+      transition: "opacity 0.3s",
     });
 
-    window.addEventListener('load', () => {
-        setTimeout(checkAndShowButton, 1000);
-    });
+    const lbl = document.createElement("span");
+    lbl.id = "x-pos-lbl";
+    lbl.style.marginRight = "2px";
 
+    const jumpBtn = makePill("↓ Jump", "rgba(29,155,240,0.9)", jump);
+    jumpBtn.id = "x-pos-jump";
+
+    const saveBtn = makePill("📌 Save", "rgba(255,255,255,0.13)", manualSave);
+
+    const closeBtn = document.createElement("span");
+    closeBtn.textContent = "✕";
+    Object.assign(closeBtn.style, {
+      cursor: "pointer",
+      color: "rgba(255,255,255,0.45)",
+      fontSize: "13px",
+      padding: "2px 4px",
+      marginLeft: "2px",
+      transition: "color 0.15s",
+    });
+    closeBtn.onmouseenter = () => (closeBtn.style.color = "#fff");
+    closeBtn.onmouseleave = () =>
+      (closeBtn.style.color = "rgba(255,255,255,0.45)");
+    closeBtn.onclick = (e) => {
+      e.stopPropagation();
+      dismissed = true;
+      teardown();
+    };
+
+    bar.append(lbl, jumpBtn, saveBtn, closeBtn);
+    document.body.appendChild(bar);
+    startScan();
+  }
+
+  function makePill(text, bg, fn) {
+    const b = document.createElement("button");
+    b.textContent = text;
+    Object.assign(b.style, {
+      background: bg,
+      color: "#fff",
+      border: "none",
+      padding: "5px 12px",
+      borderRadius: "9999px",
+      fontSize: "12px",
+      fontWeight: "600",
+      cursor: "pointer",
+      transition: "filter 0.15s, transform 0.15s",
+      whiteSpace: "nowrap",
+    });
+    b.onmouseenter = () => {
+      b.style.filter = "brightness(1.25)";
+      b.style.transform = "scale(1.06)";
+    };
+    b.onmouseleave = () => {
+      b.style.filter = "";
+      b.style.transform = "";
+    };
+    b.onclick = (e) => {
+      e.stopPropagation();
+      fn();
+    };
+    return b;
+  }
+
+  function refreshLabel() {
+    const lbl = document.getElementById("x-pos-lbl");
+    if (!lbl) return;
+    if (!saved()) {
+      teardown();
+      return;
+    }
+    const n = allSeen.size;
+    lbl.textContent = n > 0 ? `#${n}` : "";
+    lbl.style.color = "";
+  }
+
+  function setLabel(text, color) {
+    const lbl = document.getElementById("x-pos-lbl");
+    if (lbl) {
+      lbl.textContent = text;
+      lbl.style.color = color || "";
+    }
+  }
+
+  function flash(msg, color) {
+    setLabel(msg, color || "#17bf63");
+    setTimeout(refreshLabel, 1800);
+  }
+
+  function setJumpEnabled(yes) {
+    const btn = document.getElementById("x-pos-jump");
+    if (btn) {
+      btn.disabled = !yes;
+      btn.style.opacity = yes ? "1" : "0.5";
+      btn.style.cursor = yes ? "pointer" : "wait";
+    }
+  }
+
+  function teardown() {
+    stopScan();
+    bar?.remove();
+    bar = null;
+  }
+
+  function check() {
+    const k = key();
+    if (k !== prevKey) {
+      dismissed = false;
+      allSeen.clear();
+      anchorId = saved(); // snapshot for jump & auto-save boundary
+      prevKey = k;
+    }
+    if (saved() && !dismissed) {
+      build();
+      scanVisible();
+      refreshLabel();
+    } else {
+      teardown();
+    }
+  }
+
+  // =========================
+  //  Events
+  // =========================
+
+  addEventListener("scroll", onScroll, { passive: true });
+  addEventListener("popstate", () => setTimeout(check, 400));
+  addEventListener("load", () => setTimeout(check, 800));
+
+  document.addEventListener("click", (e) => {
+    if (e.target.closest('[role="tab"], a[href^="/"]')) {
+      setTimeout(check, 500);
+    }
+  });
 })();
