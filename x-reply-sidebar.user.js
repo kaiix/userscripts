@@ -30,7 +30,7 @@
   let scrollObserver = null;
   let resizing = false;
   let currentMainTweet = null;
-  let showOriginalTweet = false;
+  let showOriginalTweet = true;
 
   // --- Grab X's auth tokens from cookies/meta for API calls ---
   function getCookie(name) {
@@ -266,13 +266,18 @@
       }
       .xrs-tweet-media {
         margin: 8px 0;
-        border-radius: 16px;
+        border-radius: 12px;
         overflow: hidden;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 2px;
+        max-width: 90%;
       }
       .xrs-tweet-media img {
         width: 100%;
+        height: 150px;
+        object-fit: cover;
         display: block;
-        border-radius: 16px;
       }
       .xrs-tweet-meta {
         display: flex;
@@ -386,9 +391,9 @@
     hint.textContent = "Esc";
 
     const toggleOrigBtn = document.createElement("button");
-    toggleOrigBtn.className = "xrs-toggle-btn";
+    toggleOrigBtn.className = "xrs-toggle-btn active";
     toggleOrigBtn.innerHTML = "📌";
-    toggleOrigBtn.title = "Show original tweet";
+    toggleOrigBtn.title = "Hide original tweet";
     toggleOrigBtn.addEventListener("click", toggleOriginalTweet);
 
     const openBtn = document.createElement("button");
@@ -576,8 +581,13 @@
     const tweet = result.legacy;
     if (!tweet || !user) return null;
 
-    // Expand URLs in text
+    // Handle NoteTweets (long form)
     let text = tweet.full_text || "";
+    if (result.note_tweet?.note_tweet_results?.result?.text) {
+      text = result.note_tweet.note_tweet_results.result.text;
+    }
+
+    // Expand URLs in text
     const urls = tweet.entities?.urls || [];
     for (const u of urls) {
       text = text.replace(u.url, u.expanded_url || u.display_url || u.url);
@@ -627,10 +637,17 @@
     let cursor = null;
 
     for (const entry of entries) {
+      const entryId = entry.entryId || "";
+
       // Extract bottom cursor for "load more"
-      // Cursor entries have __typename "TimelineTimelineCursor" with value at content.value
-      if (entry.entryId?.startsWith("cursor-bottom")) {
+      if (entryId.startsWith("cursor-bottom")) {
         cursor = entry.content?.value || entry.content?.itemContent?.value || null;
+        continue;
+      }
+
+      // Filter: only focal tweet and conversation threads are replies.
+      // Recommendations usually start with "who-to-follow-", "suggest-", etc.
+      if (!entryId.startsWith("tweet-") && !entryId.startsWith("conversationthread-")) {
         continue;
       }
 
@@ -919,13 +936,12 @@
     currentTweetUrl = url;
     currentCursor = null;
     currentMainTweet = null;
-    showOriginalTweet = false;
 
-    // Reset toggle button state
+    // Sync toggle button state
     const toggleBtn = panel.querySelector(".xrs-toggle-btn");
     if (toggleBtn) {
-      toggleBtn.classList.remove("active");
-      toggleBtn.title = "Show original tweet";
+      toggleBtn.classList.toggle("active", showOriginalTweet);
+      toggleBtn.title = showOriginalTweet ? "Hide original tweet" : "Show original tweet";
     }
 
     // Update header title
