@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      4.3
-// @description  Durable position tracking for X Lists & Pinned Tabs
+// @version      4.5
+// @description  Fast jump and anti-slip position tracking
 // @author       You
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -13,13 +13,20 @@
   "use strict";
 
   const PREFIX = "x_pos_tab_";
+  const SLIP_DELAY = 10000;
+  const COLD_START_WAIT = 30 * 60 * 1000;
+
   let jumping = false;
   let dismissed = false;
-  let anchorId = null;
   let bar = null;
   let scrollTimer = null;
-  let scanTimer = null;
+  let antiSlipTimer = null;
+  let coldStartTimer = null;
   let prevKey = null;
+
+  let isReadingActive = false;
+  let lastCommittedId = null;
+  let pendingId = null;
 
   const idToIndex = new Map();
   let maxIdx = 0;
@@ -68,11 +75,14 @@
   
   function persist(id) { 
     const k = getActiveTabKey();
-    if (k) localStorage.setItem(PREFIX + k, id); 
+    if (k) {
+      localStorage.setItem(PREFIX + k, id);
+      lastCommittedId = id;
+      updateReturnButton(false);
+    }
   }
 
-  function scanVisible() {
-    if (jumping) return;
+  function scanTimeline() {
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
     for (const a of articles) {
       if (a.offsetHeight === 0) continue;
@@ -86,38 +96,142 @@
   function refreshLabel() {
     const lbl = document.getElementById("x-pos-lbl");
     if (!lbl) return;
-    scanVisible();
+    scanTimeline();
     const tid = topId();
     if (!tid) return;
     const idx = idToIndex.get(tid);
-    if (idx) lbl.textContent = `#${idx}`;
+    lbl.textContent = idx ? `#${idx}` : "";
   }
 
   function onScroll() {
     if (jumping || !getActiveTabKey()) return;
+    
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => {
-      if (window.scrollY < 10) {
-        idToIndex.clear();
-        maxIdx = 0;
-      }
-      const id = topId();
-      if (id) {
-        const last = saved();
-        if (!last || BigInt(id) <= BigInt(last)) {
-          persist(id);
+      const tid = topId();
+      if (!tid) return;
+
+      if (!isReadingActive) {
+        clearTimeout(coldStartTimer);
+        coldStartTimer = setTimeout(() => {
+          isReadingActive = true;
+          persist(tid);
+          flash("Session Active", "#1d9bf0");
+        }, COLD_START_WAIT);
+      } else {
+        if (tid !== lastCommittedId && tid !== pendingId) {
+          pendingId = tid;
+          updateReturnButton(true);
+          
+          clearTimeout(antiSlipTimer);
+          antiSlipTimer = setTimeout(() => {
+            persist(pendingId);
+            pendingId = null;
+          }, SLIP_DELAY);
         }
       }
       refreshLabel();
     }, 400);
   }
 
+  function updateReturnButton(show) {
+    const btn = document.getElementById("x-pos-return");
+    if (!btn) return;
+    if (show && lastCommittedId) {
+      btn.style.display = "inline-flex";
+    } else {
+      btn.style.display = "none";
+    }
+  }
+
+  function findArticle(targetId) {
+    const allLinks = document.querySelectorAll(`a[href*="/status/${targetId}"]`);
+    const targetLink = Array.from(allLinks).find(l => !l.closest('div[role="link"][tabindex="0"]'));
+    return targetLink?.closest("article");
+  }
+
+  async function returnToLast() {
+    if (!lastCommittedId) return;
+    clearTimeout(antiSlipTimer);
+    pendingId = null;
+
+    const article = findArticle(lastCommittedId);
+    if (article) {
+      article.scrollIntoView({ behavior: "auto", block: "center" });
+      highlight(article);
+      updateReturnButton(false);
+    } else {
+      // Fast jump logic: determine direction and jump aggressively
+      await performJump(lastCommittedId, true); 
+      updateReturnButton(false);
+    }
+  }
+
+  function highlight(article) {
+    if (!article) return;
+    article.style.transition = "background-color 0.4s ease";
+    article.style.backgroundColor = "rgba(224, 36, 94, 0.25)";
+    setTimeout(() => (article.style.backgroundColor = ""), 2500);
+  }
+
+  async function performJump(target, isFast = false) {
+    jumping = true;
+    const k = getActiveTabKey();
+    const jumpBtn = document.getElementById("x-pos-jump");
+    const originalText = jumpBtn?.textContent;
+    if (jumpBtn) jumpBtn.textContent = "Searching...";
+
+    let found = false;
+    const currentTid = topId();
+    // Determine direction if possible
+    let direction = 1; // Default down
+    if (currentTid && BigInt(target) > BigInt(currentTid)) {
+      direction = -1; // Target is newer, go up
+    }
+
+    const step = isFast ? window.innerHeight * 4 : window.innerHeight * 2;
+    const delay = isFast ? 100 : 600;
+    const maxTries = isFast ? 40 : 60;
+
+    for (let i = 0; i < maxTries; i++) {
+      if (getActiveTabKey() !== k) break;
+      const article = findArticle(target);
+
+      if (article) {
+        article.scrollIntoView({ behavior: isFast ? "auto" : "smooth", block: "center" });
+        highlight(article);
+        found = true;
+        break;
+      }
+      window.scrollBy({ top: step * direction, behavior: isFast ? "auto" : "smooth" });
+      await new Promise(r => setTimeout(r, delay));
+    }
+
+    if (jumpBtn) jumpBtn.textContent = found ? "✓ Found" : "↓ Jump";
+    setTimeout(() => {
+      if (jumpBtn) jumpBtn.textContent = originalText;
+      jumping = false;
+      refreshLabel();
+    }, 1500);
+    return found;
+  }
+
+  async function jump() {
+    const target = saved();
+    if (!target) return;
+    const success = await performJump(target, false); // Normal jump uses smooth sweep
+    if (success) {
+      isReadingActive = true;
+      lastCommittedId = target;
+      flash("Reading Active", "#1d9bf0");
+    }
+  }
+
   function manualSave() {
     const id = topId();
     if (!id) return;
     persist(id);
-    anchorId = id;
-    refreshLabel();
+    isReadingActive = true;
     flash("✓ Saved");
   }
 
@@ -131,47 +245,7 @@
       lbl.textContent = old;
       lbl.style.color = "";
       refreshLabel();
-    }, 1500);
-  }
-
-  async function performJump(target) {
-    jumping = true;
-    const k = getActiveTabKey();
-    const jumpBtn = document.getElementById("x-pos-jump");
-    if (jumpBtn) jumpBtn.textContent = "Scanning...";
-
-    let found = false;
-    for (let i = 0; i < 60; i++) {
-      if (getActiveTabKey() !== k) break;
-      const allLinks = document.querySelectorAll(`a[href*="/status/${target}"]`);
-      let targetLink = Array.from(allLinks).find(l => !l.closest('div[role="link"][tabindex="0"]'));
-
-      if (targetLink) {
-        const article = targetLink.closest("article");
-        article?.scrollIntoView({ behavior: "smooth", block: "center" });
-        if (article) {
-          article.style.transition = "background-color 0.4s ease";
-          article.style.backgroundColor = "rgba(29, 155, 240, 0.25)";
-          setTimeout(() => (article.style.backgroundColor = ""), 2500);
-        }
-        found = true;
-        break;
-      }
-      window.scrollBy({ top: window.innerHeight * 2, behavior: "smooth" });
-      await new Promise(r => setTimeout(r, 600));
-    }
-
-    if (jumpBtn) jumpBtn.textContent = found ? "✓ Found" : "↓ Jump";
-    setTimeout(() => {
-      if (jumpBtn) jumpBtn.textContent = "↓ Jump";
-      jumping = false;
-      refreshLabel();
-    }, 1500);
-  }
-
-  async function jump() {
-    const target = saved();
-    if (target) await performJump(target);
+    }, 2000);
   }
 
   function build() {
@@ -188,19 +262,23 @@
     const jumpBtn = makePill("↓ Jump", "rgba(29,155,240,0.9)", jump);
     jumpBtn.id = "x-pos-jump";
     const saveBtn = makePill("📌 Save", "rgba(255,255,255,0.13)", manualSave);
+    const returnBtn = makePill("↩ Back", "#e0245e", returnToLast);
+    returnBtn.id = "x-pos-return";
+    returnBtn.style.display = "none";
     const closeBtn = document.createElement("span"); 
     closeBtn.textContent = "✕";
     closeBtn.style.cursor = "pointer";
     closeBtn.onclick = () => { dismissed = true; bar.remove(); bar = null; };
-    bar.append(lbl, jumpBtn, saveBtn, closeBtn);
+    
+    bar.append(lbl, jumpBtn, saveBtn, returnBtn, closeBtn);
     document.body.appendChild(bar);
   }
 
   function makePill(text, bg, fn) {
     const b = document.createElement("button");
     b.textContent = text;
-    Object.assign(b.style, { background: bg, color: "#fff", border: "none", padding: "5px 12px", borderRadius: "9999px", cursor: "pointer", fontWeight: "bold" });
-    b.onclick = fn;
+    Object.assign(b.style, { background: bg, color: "#fff", border: "none", padding: "5px 12px", borderRadius: "9999px", cursor: "pointer", fontWeight: "bold", display: "inline-flex", alignItems: "center" });
+    b.onclick = (e) => { e.stopPropagation(); fn(); };
     return b;
   }
 
@@ -213,10 +291,13 @@
 
     if (k !== prevKey) { 
       dismissed = false; 
-      anchorId = null; 
+      lastCommittedId = saved(); 
       prevKey = k;
       idToIndex.clear();
       maxIdx = 0;
+      isReadingActive = false; 
+      clearTimeout(coldStartTimer);
+      clearTimeout(antiSlipTimer);
     }
     
     if (!dismissed) {
@@ -226,7 +307,6 @@
   }
 
   window.addEventListener("scroll", onScroll, { passive: true });
-  setInterval(() => { if (getActiveTabKey()) scanVisible(); }, 800);
   setInterval(check, 1000);
   document.addEventListener("click", (e) => {
     if (e.target.closest('[role="tab"]')) setTimeout(check, 100);
