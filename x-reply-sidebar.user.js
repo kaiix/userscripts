@@ -928,9 +928,31 @@
     }
   }
 
+  function loadQuotedFromData(data) {
+    const instructions =
+      data?.data?.tweetResult?.result?.timeline_v2?.timeline?.instructions ||
+      data?.data?.threaded_conversation_with_injections_v2?.instructions ||
+      [];
+
+    const entries = instructions.flatMap((i) => i.entries || []);
+    for (const entry of entries) {
+      const tweetResult = entry.content?.itemContent?.tweet_results?.result || 
+                          entry.content?.items?.[0]?.item?.itemContent?.tweet_results?.result;
+      
+      const tweet = tweetResult?.legacy || (tweetResult?.__typename === "TweetWithVisibilityResults" ? tweetResult.tweet?.legacy : null);
+      if (tweet?.quoted_status_id_str) {
+        return {
+          id: tweet.quoted_status_id_str,
+          result: tweetResult.quoted_status_result?.result
+        };
+      }
+    }
+    return null;
+  }
+
   // --- Load tweet ---
 
-  async function loadTweet(url, tweetId) {
+  async function loadTweet(url, tweetId, isQuoteClick = false) {
     if (!panel) createPanel();
     currentTweetId = tweetId;
     currentTweetUrl = url;
@@ -955,12 +977,24 @@
     if (content) content.scrollTop = 0;
 
     try {
-      const data = await fetchTweetDetail(tweetId);
+      let data = await fetchTweetDetail(tweetId);
+      
+      if (isQuoteClick) {
+        const quoted = loadQuotedFromData(data);
+        if (quoted) {
+          tweetId = quoted.id;
+          // We could potentially use quoted.result here to avoid another fetch,
+          // but for simplicity and getting full threading, we fetch the quoted tweet detail.
+          data = await fetchTweetDetail(tweetId);
+        }
+      }
+
       const { main, replies, cursor } = extractTweetsFromTimeline(data, tweetId);
 
       // Build correct URL from API data
       if (main) {
         currentTweetUrl = `https://x.com/${main.screenName}/status/${main.id}`;
+        currentTweetId = main.id;
       }
 
       renderContent(main, replies, cursor, false);
@@ -976,19 +1010,27 @@
     const tweet = el.closest('article[data-testid="tweet"]');
     if (!tweet) return null;
 
-    const links = tweet.querySelectorAll('a[href*="/status/"]');
-    for (const link of links) {
-      const href = link.getAttribute("href");
-      const match = href?.match(/^\/([^/]+)\/status\/(\d+)$/);
-      if (match) {
-        return {
-          url: "https://x.com" + href,
-          tweetId: match[2],
-          article: tweet,
-        };
+    function getStatusInfo(root) {
+      const links = root.querySelectorAll('a[href*="/status/"]');
+      for (const link of links) {
+        const href = link.getAttribute("href");
+        const match = href?.match(/^\/([^/]+)\/status\/(\d+)$/);
+        if (match) {
+          return {
+            url: "https://x.com" + href,
+            tweetId: match[2]
+          };
+        }
       }
+      return null;
     }
-    return null;
+
+    const quoteContainer = el.closest('div[role="link"][tabindex="0"]');
+    const isQuoteClick = !!(quoteContainer && tweet.contains(quoteContainer));
+    
+    // For quote clicks, we first get the main tweet ID, then loadTweet will resolve the quote
+    const info = getStatusInfo(tweet);
+    return info ? { ...info, article: tweet, isQuoteClick } : null;
   }
 
   function isInteractive(el) {
@@ -1024,10 +1066,6 @@
     const tweet = e.target.closest('article[data-testid="tweet"]');
     if (!tweet) return;
 
-    // Let quote tweet clicks pass through to X's default navigation
-    const quoteContainer = e.target.closest('div[role="link"][tabindex="0"]');
-    if (quoteContainer && tweet.contains(quoteContainer)) return;
-
     // Allow non-status links to work normally
     const clickedLink = e.target.closest("a");
     if (clickedLink) {
@@ -1045,7 +1083,7 @@
     document.querySelector("article.xrs-active")?.classList.remove("xrs-active");
     info.article.classList.add("xrs-active");
 
-    loadTweet(info.url, info.tweetId);
+    loadTweet(info.url, info.tweetId, info.isQuoteClick);
   }
 
   // --- Keyboard ---
