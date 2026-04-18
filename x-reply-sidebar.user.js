@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.0.0
+// @version      2.0.1
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -752,7 +752,9 @@
     div.className = `xrs-tweet ${isMain ? "" : "xrs-reply xrs-tweet-clickable"}`;
 
     if (!isMain) {
-      div.addEventListener("click", () => {
+      div.addEventListener("click", (e) => {
+        if (e.target.closest("a, button")) return;
+        if (window.getSelection().toString()) return;
         const url = `https://x.com/${tweet.screenName}/status/${tweet.id}`;
         loadTweet(url, tweet.id);
       });
@@ -1058,6 +1060,9 @@
 
     // Skip interactive elements
     if (isInteractive(e.target)) return;
+
+    // Skip if text is selected
+    if (window.getSelection().toString()) return;
 
     // Skip modifier clicks
     if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
