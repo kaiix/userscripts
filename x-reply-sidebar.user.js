@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.0.1
+// @version      2.0.2
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -133,11 +133,8 @@
       }
 
       .xrs-hint {
-        font-size: 12px;
-        color: rgb(113, 118, 123);
-        padding: 0 4px;
+        display: none;
       }
-
       #xrs-resize {
         position: absolute;
         top: 0;
@@ -386,13 +383,9 @@
     const actions = document.createElement("div");
     actions.id = "xrs-header-actions";
 
-    const hint = document.createElement("span");
-    hint.className = "xrs-hint";
-    hint.textContent = "Esc";
-
     const toggleOrigBtn = document.createElement("button");
     toggleOrigBtn.className = "xrs-toggle-btn active";
-    toggleOrigBtn.innerHTML = "📌";
+    toggleOrigBtn.innerHTML = "👁";
     toggleOrigBtn.title = "Hide original tweet";
     toggleOrigBtn.addEventListener("click", toggleOriginalTweet);
 
@@ -403,10 +396,10 @@
 
     const closeBtn = document.createElement("button");
     closeBtn.innerHTML = "✕";
-    closeBtn.title = "Close panel";
+    closeBtn.title = "Close panel (Esc)";
     closeBtn.addEventListener("click", closePanel);
 
-    actions.append(toggleOrigBtn, hint, openBtn, closeBtn);
+    actions.append(toggleOrigBtn, openBtn, closeBtn);
     header.append(title, actions);
     panel.appendChild(header);
 
@@ -417,10 +410,25 @@
 
     document.body.appendChild(panel);
     document.body.classList.add("xrs-panel-open");
+
+    // Close panel when the main timeline (window) scrolls
+    lastScrollY = window.scrollY;
+    window.addEventListener("scroll", handleMainScroll, { passive: true });
+  }
+
+  let lastScrollY = 0;
+  function handleMainScroll() {
+    if (!panel) return;
+    const y = window.scrollY;
+    // Ignore tiny/incidental deltas (e.g. layout shifts)
+    if (Math.abs(y - lastScrollY) < 10) return;
+    lastScrollY = y;
+    closePanel();
   }
 
   function closePanel() {
     if (!panel) return;
+    window.removeEventListener("scroll", handleMainScroll);
     document.querySelector("article.xrs-active")?.classList.remove("xrs-active");
     panel.remove();
     panel = null;
