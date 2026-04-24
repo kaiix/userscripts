@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.0.4
+// @version      2.0.5
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -164,6 +164,7 @@
         flex: 1;
         overflow-y: auto;
         overflow-x: hidden;
+        overscroll-behavior: contain;
       }
 
       #xrs-content::-webkit-scrollbar {
@@ -372,11 +373,16 @@
 
   // --- Panel ---
 
+  let pointerOverPanel = false;
+
   function createPanel() {
     if (panel) return;
 
     panel = document.createElement("div");
     panel.id = "xrs-panel";
+    pointerOverPanel = false;
+    panel.addEventListener("pointerenter", () => { pointerOverPanel = true; });
+    panel.addEventListener("pointerleave", () => { pointerOverPanel = false; });
 
     // Resize handle
     const resize = document.createElement("div");
@@ -434,6 +440,9 @@
     const t = e.target;
     // Ignore scrolls inside the sidebar (e.g. reply list loading more)
     if (t && t.nodeType === 1 && panel.contains(t)) return;
+    // Ignore window/page scrolls while the pointer is over the sidebar
+    // (scroll chaining when the reply list hits its end would otherwise close the panel)
+    if (pointerOverPanel) return;
     // For window/document scrolls, require a small delta to ignore reflow jitter
     if (t === document || t === document.documentElement || t === document.body) {
       const y = window.scrollY;
