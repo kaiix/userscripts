@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.0.2
+// @version      2.0.3
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -85,6 +85,18 @@
         box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
         color: rgb(231, 233, 234);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        animation: xrs-slide-in 0.22s ease-out;
+      }
+      #xrs-panel.xrs-closing {
+        animation: xrs-slide-out 0.18s ease-in forwards;
+      }
+      @keyframes xrs-slide-in {
+        from { transform: translateX(100%); opacity: 0.6; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes xrs-slide-out {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0.6; }
       }
 
       #xrs-header {
@@ -430,10 +442,30 @@
     if (!panel) return;
     window.removeEventListener("scroll", handleMainScroll);
     document.querySelector("article.xrs-active")?.classList.remove("xrs-active");
-    panel.remove();
+
+    const panelEl = panel;
+    // Detach state immediately so a new loadTweet can create a fresh panel
     panel = null;
     currentTweetUrl = null;
-    document.body.classList.remove("xrs-panel-open");
+
+    const cleanup = () => {
+      panelEl.remove();
+      // Only drop body class if no new panel has appeared meanwhile
+      if (!document.getElementById("xrs-panel")) {
+        document.body.classList.remove("xrs-panel-open");
+      }
+    };
+
+    panelEl.classList.add("xrs-closing");
+    let done = false;
+    const onEnd = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+    };
+    panelEl.addEventListener("animationend", onEnd, { once: true });
+    // Fallback in case animationend doesn't fire (e.g., reduced-motion)
+    setTimeout(onEnd, 260);
   }
 
   function openInMainView() {
