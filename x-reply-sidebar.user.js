@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.0.3
+// @version      2.0.4
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -423,24 +423,30 @@
     document.body.appendChild(panel);
     document.body.classList.add("xrs-panel-open");
 
-    // Close panel when the main timeline (window) scrolls
+    // Close panel when the main timeline scrolls (ignore scrolls inside the panel).
     lastScrollY = window.scrollY;
-    window.addEventListener("scroll", handleMainScroll, { passive: true });
+    document.addEventListener("scroll", handleMainScroll, true);
   }
 
   let lastScrollY = 0;
-  function handleMainScroll() {
+  function handleMainScroll(e) {
     if (!panel) return;
-    const y = window.scrollY;
-    // Ignore tiny/incidental deltas (e.g. layout shifts)
-    if (Math.abs(y - lastScrollY) < 10) return;
-    lastScrollY = y;
+    const t = e.target;
+    // Ignore scrolls inside the sidebar (e.g. reply list loading more)
+    if (t && t.nodeType === 1 && panel.contains(t)) return;
+    // For window/document scrolls, require a small delta to ignore reflow jitter
+    if (t === document || t === document.documentElement || t === document.body) {
+      const y = window.scrollY;
+      if (Math.abs(y - lastScrollY) < 10) return;
+      lastScrollY = y;
+    }
     closePanel();
   }
 
   function closePanel() {
     if (!panel) return;
     window.removeEventListener("scroll", handleMainScroll);
+    document.removeEventListener("scroll", handleMainScroll, true);
     document.querySelector("article.xrs-active")?.classList.remove("xrs-active");
 
     const panelEl = panel;
