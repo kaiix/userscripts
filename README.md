@@ -12,6 +12,7 @@
 - [Gemini Command Palette](https://raw.githubusercontent.com/kaiix/userscripts/main/gemini-command-palette.user.js)
 - [Linear Board Reactions](https://raw.githubusercontent.com/kaiix/userscripts/main/linear-board-reactions.user.js)
 - [Twitter Start Tab](https://raw.githubusercontent.com/kaiix/userscripts/main/twitter-start-tab.user.js)
+- [YouTube Hold to Speed Up](https://raw.githubusercontent.com/kaiix/userscripts/main/youtube-hold-speed.user.js)
 
 ## Userscript Managers
 
