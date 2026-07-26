@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.0.5
+// @version      2.1.0
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -360,12 +360,24 @@
         cursor: pointer;
       }
 
-      /* Thread line */
+      /* Context above the focal tweet */
+      .xrs-context-tweet {
+        border-bottom: none;
+      }
+      .xrs-context-relation {
+        padding: 10px 16px 0;
+        color: rgb(113, 118, 123);
+        font-size: 13px;
+        font-weight: 600;
+      }
       .xrs-thread-line {
         width: 2px;
+        height: 16px;
         background: rgb(47, 51, 54);
-        margin: 0 auto;
-        min-height: 12px;
+        margin-left: 35px;
+      }
+      .xrs-anchor-spacer {
+        pointer-events: none;
       }
     `;
     document.head.appendChild(style);
@@ -497,8 +509,15 @@
       btn.title = showOriginalTweet ? "Hide original tweet" : "Show original tweet";
     }
     const container = panel?.querySelector(".xrs-original-tweet");
+    const content = panel?.querySelector("#xrs-content");
     if (container) {
       container.style.display = showOriginalTweet ? "" : "none";
+    }
+    if (content) {
+      content.querySelector(".xrs-anchor-spacer")?.remove();
+      if (showOriginalTweet && content.querySelector(".xrs-context-tweet")) {
+        anchorFocalTweet(content);
+      }
     }
   }
 
@@ -623,18 +642,24 @@
 
   // --- Parse tweet data from API response ---
 
-  function parseTweetResult(result) {
-    if (!result) return null;
-
-    // Handle different wrapper types
-    if (result.__typename === "TweetWithVisibilityResults") {
+  function unwrapTweetResult(result) {
+    while (result?.__typename === "TweetWithVisibilityResults" && result.tweet) {
       result = result.tweet;
     }
+    return result;
+  }
+
+  function parseTweetResult(rawResult, seen = new Set()) {
+    const result = unwrapTweetResult(rawResult);
     if (!result?.core?.user_results?.result) return null;
 
     const user = result.core.user_results.result.legacy;
     const tweet = result.legacy;
-    if (!tweet || !user) return null;
+    const id = String(result.rest_id || tweet?.id_str || "");
+    if (!tweet || !user || !id || seen.has(id)) return null;
+
+    const nextSeen = new Set(seen);
+    nextSeen.add(id);
 
     // Handle NoteTweets (long form)
     let text = tweet.full_text || "";
@@ -660,8 +685,21 @@
       expandedUrl: m.expanded_url,
     }));
 
+    const references = [];
+    const reposted = parseTweetResult(
+      tweet.retweeted_status_result?.result,
+      nextSeen
+    );
+    if (reposted) references.push({ type: "repost", tweet: reposted });
+
+    const quoted = parseTweetResult(
+      result.quoted_status_result?.result,
+      nextSeen
+    );
+    if (quoted) references.push({ type: "quote", tweet: quoted });
+
     return {
-      id: tweet.id_str,
+      id,
       text,
       name: user.name,
       screenName: user.screen_name,
@@ -675,8 +713,20 @@
         views: result.views?.count,
       },
       media,
-      inReplyTo: tweet.in_reply_to_status_id_str,
+      inReplyTo: tweet.in_reply_to_status_id_str
+        ? String(tweet.in_reply_to_status_id_str)
+        : null,
+      references,
     };
+  }
+
+  function addReferenceContext(tweet, context, seen) {
+    for (const reference of tweet.references || []) {
+      addReferenceContext(reference.tweet, context, seen);
+      if (seen.has(reference.tweet.id)) continue;
+      seen.add(reference.tweet.id);
+      context.push(reference);
+    }
   }
 
   function extractTweetsFromTimeline(data, focalTweetId) {
@@ -686,10 +736,16 @@
       [];
 
     const entries = instructions.flatMap((i) => i.entries || []);
-
-    let mainTweet = null;
-    const replies = [];
+    const tweets = new Map();
+    const order = [];
     let cursor = null;
+
+    function addTweet(tweetResult) {
+      const parsed = parseTweetResult(tweetResult);
+      if (!parsed || tweets.has(parsed.id)) return;
+      tweets.set(parsed.id, parsed);
+      order.push(parsed);
+    }
 
     for (const entry of entries) {
       const entryId = entry.entryId || "";
@@ -700,8 +756,7 @@
         continue;
       }
 
-      // Filter: only focal tweet and conversation threads are replies.
-      // Recommendations usually start with "who-to-follow-", "suggest-", etc.
+      // Filter out recommendations such as who-to-follow and suggestions.
       if (!entryId.startsWith("tweet-") && !entryId.startsWith("conversationthread-")) {
         continue;
       }
@@ -710,37 +765,43 @@
       if (!content) continue;
 
       if (content.entryType === "TimelineTimelineItem" || content.__typename === "TimelineTimelineItem") {
-        const tweetResult = content.itemContent?.tweet_results?.result;
-        const parsed = parseTweetResult(tweetResult);
-        if (!parsed) continue;
-
-        if (parsed.id === focalTweetId) {
-          mainTweet = parsed;
-        } else {
-          replies.push(parsed);
-        }
+        addTweet(content.itemContent?.tweet_results?.result);
       } else if (content.entryType === "TimelineTimelineModule" || content.__typename === "TimelineTimelineModule") {
-        const items = content.items || [];
-        for (const item of items) {
+        for (const item of content.items || []) {
           // Check for cursor inside modules too
           if (item.item?.itemContent?.cursorType === "Bottom") {
             cursor = item.item.itemContent.value || null;
             continue;
           }
-          const tweetResult = item.item?.itemContent?.tweet_results?.result;
-          const parsed = parseTweetResult(tweetResult);
-          if (parsed) {
-            if (parsed.id === focalTweetId) {
-              mainTweet = parsed;
-            } else {
-              replies.push(parsed);
-            }
-          }
+          addTweet(item.item?.itemContent?.tweet_results?.result);
         }
       }
     }
 
-    return { main: mainTweet, replies, cursor };
+    const focalId = String(focalTweetId);
+    const mainTweet = tweets.get(focalId) || null;
+    const ancestors = [];
+    const ancestorIds = new Set();
+
+    // Follow parent IDs instead of relying on the API's presentation order.
+    // This keeps ancestors above the focal tweet and out of the reply list.
+    let parentId = mainTweet?.inReplyTo;
+    while (parentId && !ancestorIds.has(parentId) && parentId !== focalId) {
+      const parent = tweets.get(parentId);
+      if (!parent) break;
+      ancestorIds.add(parentId);
+      ancestors.push(parent);
+      parentId = parent.inReplyTo;
+    }
+    ancestors.reverse();
+
+    const context = ancestors.map((tweet) => ({ type: "ancestor", tweet }));
+    const contextIds = new Set([...ancestorIds, focalId]);
+    if (mainTweet) addReferenceContext(mainTweet, context, contextIds);
+
+    const replies = order.filter((tweet) => !contextIds.has(tweet.id));
+
+    return { main: mainTweet, context, replies, cursor };
   }
 
   // --- Render ---
@@ -802,9 +863,12 @@
     return parts.join("");
   }
 
-  function renderTweet(tweet, isMain) {
+  function renderTweet(tweet, isMain, isContext = false) {
     const div = document.createElement("div");
-    div.className = `xrs-tweet ${isMain ? "" : "xrs-reply xrs-tweet-clickable"}`;
+    const classes = ["xrs-tweet"];
+    if (isMain) classes.push("xrs-focal-tweet");
+    else classes.push(isContext ? "xrs-context-tweet" : "xrs-reply", "xrs-tweet-clickable");
+    div.className = classes.join(" ");
 
     if (!isMain) {
       div.addEventListener("click", (e) => {
@@ -819,7 +883,9 @@
     header.className = "xrs-tweet-header";
 
     const avatar = document.createElement("img");
-    avatar.className = `xrs-avatar ${isMain ? "" : "xrs-reply-avatar"}`;
+    avatar.className = isMain || isContext
+      ? "xrs-avatar"
+      : "xrs-avatar xrs-reply-avatar";
     avatar.src = tweet.avatar || "";
     avatar.alt = tweet.name;
     avatar.addEventListener("click", (e) => {
@@ -894,7 +960,55 @@
     return d.innerHTML;
   }
 
-  function renderContent(main, replies, cursor, append) {
+  function appendContextTweet(container, contextItem) {
+    if (contextItem.type !== "ancestor") {
+      const relation = document.createElement("div");
+      relation.className = "xrs-context-relation";
+      relation.textContent = contextItem.type === "repost" ? "Reposted post" : "Quoted post";
+      container.appendChild(relation);
+    }
+
+    container.appendChild(renderTweet(contextItem.tweet, false, true));
+
+    const line = document.createElement("div");
+    line.className = "xrs-thread-line";
+    container.appendChild(line);
+  }
+
+  function anchorFocalTweet(content) {
+    const focal = content.querySelector(".xrs-focal-tweet");
+    if (!focal) return;
+
+    content.querySelector(".xrs-anchor-spacer")?.remove();
+    requestAnimationFrame(() => {
+      if (
+        !panel ||
+        panel.querySelector("#xrs-content") !== content ||
+        !showOriginalTweet
+      ) return;
+
+      const focalTop =
+        focal.getBoundingClientRect().top -
+        content.getBoundingClientRect().top +
+        content.scrollTop;
+      const missingSpace = Math.ceil(
+        focalTop + content.clientHeight - content.scrollHeight
+      );
+
+      // Keep enough content below the focal tweet to make all context reachable
+      // by scrolling upward, even when there are few or no replies.
+      if (missingSpace > 0) {
+        const spacer = document.createElement("div");
+        spacer.className = "xrs-anchor-spacer";
+        spacer.style.height = `${missingSpace}px`;
+        content.appendChild(spacer);
+      }
+
+      content.scrollTop = focalTop;
+    });
+  }
+
+  function renderContent(main, context, replies, cursor, append) {
     const content = panel?.querySelector("#xrs-content");
     if (!content) return;
 
@@ -906,27 +1020,32 @@
 
     if (append) {
       content.querySelector(".xrs-sentinel")?.remove();
+      content.querySelector(".xrs-anchor-spacer")?.remove();
     } else {
       content.innerHTML = "";
 
-      // Render original tweet (hidden by default)
       if (main) {
         currentMainTweet = main;
         const origContainer = document.createElement("div");
         origContainer.className = "xrs-original-tweet";
         origContainer.style.display = showOriginalTweet ? "" : "none";
+
+        for (const contextItem of context) {
+          appendContextTweet(origContainer, contextItem);
+        }
         origContainer.appendChild(renderTweet(main, true));
         content.appendChild(origContainer);
       }
     }
 
     if (replies.length > 0) {
+      content.querySelector(".xrs-empty")?.remove();
       for (const reply of replies) {
         content.appendChild(renderTweet(reply, false));
       }
     } else if (!append) {
       const empty = document.createElement("div");
-      empty.className = "xrs-error";
+      empty.className = "xrs-error xrs-empty";
       empty.style.color = "rgb(113, 118, 123)";
       empty.textContent = "No replies yet";
       content.appendChild(empty);
@@ -960,6 +1079,10 @@
       );
       scrollObserver.observe(sentinel);
     }
+
+    if (!append && context.length > 0 && showOriginalTweet) {
+      anchorFocalTweet(content);
+    }
   }
 
   async function loadMoreReplies() {
@@ -969,7 +1092,7 @@
     try {
       const data = await fetchTweetDetail(currentTweetId, currentCursor);
       const { replies, cursor } = extractTweetsFromTimeline(data, currentTweetId);
-      renderContent(null, replies, cursor, true);
+      renderContent(null, [], replies, cursor, true);
     } catch (err) {
       console.error("[X Reply Sidebar]", err);
       loadingMore = false;
@@ -985,26 +1108,18 @@
     }
   }
 
-  function loadQuotedFromData(data) {
-    const instructions =
-      data?.data?.tweetResult?.result?.timeline_v2?.timeline?.instructions ||
-      data?.data?.threaded_conversation_with_injections_v2?.instructions ||
-      [];
-
-    const entries = instructions.flatMap((i) => i.entries || []);
-    for (const entry of entries) {
-      const tweetResult = entry.content?.itemContent?.tweet_results?.result || 
-                          entry.content?.items?.[0]?.item?.itemContent?.tweet_results?.result;
-      
-      const tweet = tweetResult?.legacy || (tweetResult?.__typename === "TweetWithVisibilityResults" ? tweetResult.tweet?.legacy : null);
-      if (tweet?.quoted_status_id_str) {
-        return {
-          id: tweet.quoted_status_id_str,
-          result: tweetResult.quoted_status_result?.result
-        };
-      }
+  function findReferencedTweet(tweet, type) {
+    for (const reference of tweet?.references || []) {
+      if (reference.type === type) return reference.tweet;
+      const nested = findReferencedTweet(reference.tweet, type);
+      if (nested) return nested;
     }
     return null;
+  }
+
+  function loadQuotedFromData(data, focalTweetId) {
+    const { main } = extractTweetsFromTimeline(data, focalTweetId);
+    return findReferencedTweet(main, "quote");
   }
 
   // --- Load tweet ---
@@ -1037,16 +1152,15 @@
       let data = await fetchTweetDetail(tweetId);
       
       if (isQuoteClick) {
-        const quoted = loadQuotedFromData(data);
+        const quoted = loadQuotedFromData(data, tweetId);
         if (quoted) {
           tweetId = quoted.id;
-          // We could potentially use quoted.result here to avoid another fetch,
-          // but for simplicity and getting full threading, we fetch the quoted tweet detail.
+          // Fetch the detail again so the response includes the quoted post's thread.
           data = await fetchTweetDetail(tweetId);
         }
       }
 
-      const { main, replies, cursor } = extractTweetsFromTimeline(data, tweetId);
+      const { main, context, replies, cursor } = extractTweetsFromTimeline(data, tweetId);
 
       // Build correct URL from API data
       if (main) {
@@ -1054,7 +1168,7 @@
         currentTweetId = main.id;
       }
 
-      renderContent(main, replies, cursor, false);
+      renderContent(main, context, replies, cursor, false);
     } catch (err) {
       console.error("[X Reply Sidebar]", err);
       showError(`Failed to load replies: ${escHtml(err.message)}`);
@@ -1161,7 +1275,7 @@
     injectStyles();
     document.addEventListener("click", handleClick, true);
     document.addEventListener("keydown", handleKeyDown);
-    console.log("[X Reply Sidebar] v2.0 initialized");
+    console.log("[X Reply Sidebar] v2.1 initialized");
   }
 
   if (document.readyState === "loading") {
