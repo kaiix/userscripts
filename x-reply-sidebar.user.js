@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X Reply Sidebar
-// @version      2.1.0
+// @version      2.1.2
 // @description  Opens tweet replies in a side panel to the right of the timeline
 // @author       kaiix
 // @namespace    https://github.com/kaiix
@@ -20,6 +20,7 @@
   // --- Configuration ---
   const PANEL_WIDTH = 600;
   const PANEL_MIN_WIDTH = 400;
+  const MEDIA_MAX_HEIGHT = 510;
 
   // --- State ---
   let panel = null;
@@ -278,16 +279,64 @@
         margin: 8px 0;
         border-radius: 12px;
         overflow: hidden;
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 2px;
-        max-width: 90%;
+        max-width: 100%;
       }
       .xrs-tweet-media img {
-        width: 100%;
-        height: 150px;
-        object-fit: cover;
         display: block;
+      }
+      .xrs-media-link {
+        cursor: zoom-in;
+      }
+      .xrs-media-link:focus-visible {
+        outline: 2px solid rgb(29, 155, 240);
+        outline-offset: -2px;
+      }
+      .xrs-media-single {
+        display: inline-flex;
+        vertical-align: top;
+        max-height: ${MEDIA_MAX_HEIGHT}px;
+      }
+      .xrs-media-single .xrs-media-link {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        max-height: ${MEDIA_MAX_HEIGHT}px;
+      }
+      .xrs-media-single img {
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: ${MEDIA_MAX_HEIGHT}px;
+        object-fit: contain;
+      }
+      .xrs-media-grid {
+        display: grid;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        gap: 2px;
+      }
+      .xrs-media-grid .xrs-media-link {
+        display: block;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+      }
+      .xrs-media-grid img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .xrs-media-count-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .xrs-media-count-3,
+      .xrs-media-count-4 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: repeat(2, minmax(0, 1fr));
+      }
+      .xrs-media-count-3 .xrs-media-link:first-child {
+        grid-row: 1 / -1;
       }
       .xrs-tweet-meta {
         display: flex;
@@ -683,6 +732,9 @@
       type: m.type,
       url: m.media_url_https,
       expandedUrl: m.expanded_url,
+      alt: m.ext_alt_text || "",
+      width: m.original_info?.width,
+      height: m.original_info?.height,
     }));
 
     const references = [];
@@ -863,6 +915,20 @@
     return parts.join("");
   }
 
+  function handlePhotoClick(e, tweetId, photoIndex) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+
+    const photoSuffix = `/status/${tweetId}/photo/${photoIndex}`;
+    const nativePhotoLink = Array.from(
+      document.querySelectorAll('article[data-testid="tweet"] a[href*="/photo/"]')
+    ).find((link) => link.getAttribute("href")?.endsWith(photoSuffix));
+
+    if (nativePhotoLink) {
+      e.preventDefault();
+      nativePhotoLink.click();
+    }
+  }
+
   function renderTweet(tweet, isMain, isContext = false) {
     const div = document.createElement("div");
     const classes = ["xrs-tweet"];
@@ -917,17 +983,42 @@
     }
 
     // Media
-    if (tweet.media?.length) {
+    const photos = tweet.media?.filter((media) => media.type === "photo") || [];
+    if (photos.length) {
       const mediaContainer = document.createElement("div");
-      mediaContainer.className = "xrs-tweet-media";
-      for (const m of tweet.media) {
-        if (m.type === "photo") {
-          const img = document.createElement("img");
-          img.src = m.url;
-          img.loading = "lazy";
-          mediaContainer.appendChild(img);
-        }
+      mediaContainer.className = photos.length === 1
+        ? "xrs-tweet-media xrs-media-single"
+        : `xrs-tweet-media xrs-media-grid xrs-media-count-${photos.length}`;
+
+      const singlePhoto = photos.length === 1 ? photos[0] : null;
+      if (singlePhoto?.width && singlePhoto.height) {
+        const displayHeight = Math.min(singlePhoto.height, MEDIA_MAX_HEIGHT);
+        const displayWidth = displayHeight * singlePhoto.width / singlePhoto.height;
+        mediaContainer.style.width = `${displayWidth}px`;
+        mediaContainer.style.aspectRatio = `${singlePhoto.width} / ${singlePhoto.height}`;
       }
+
+      photos.forEach((photo, index) => {
+        const photoIndex = index + 1;
+        const photoLink = document.createElement("a");
+        photoLink.className = "xrs-media-link";
+        photoLink.href = `https://x.com/${tweet.screenName}/status/${tweet.id}/photo/${photoIndex}`;
+        photoLink.setAttribute("aria-label", photo.alt || `Open photo ${photoIndex}`);
+        photoLink.addEventListener("click", (e) => {
+          handlePhotoClick(e, tweet.id, photoIndex);
+        });
+
+        const img = document.createElement("img");
+        img.src = photo.url;
+        img.alt = photo.alt;
+        if (photo.width && photo.height) {
+          img.width = photo.width;
+          img.height = photo.height;
+        }
+        img.loading = "lazy";
+        photoLink.appendChild(img);
+        mediaContainer.appendChild(photoLink);
+      });
       div.appendChild(mediaContainer);
     }
 
@@ -1275,7 +1366,7 @@
     injectStyles();
     document.addEventListener("click", handleClick, true);
     document.addEventListener("keydown", handleKeyDown);
-    console.log("[X Reply Sidebar] v2.1 initialized");
+    console.log("[X Reply Sidebar] v2.1.2 initialized");
   }
 
   if (document.readyState === "loading") {
