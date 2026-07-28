@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name        Clean bilibili
-// @version     1.0.0
-// @description Clean bilibili homepage
+// @version     1.1.0
+// @description Remove the carousel from the bilibili homepage
+// @run-at      document-start
 // @author      kaiix
 // @namespace   https://github.com/kaiix
 // @license     MIT
@@ -16,10 +17,17 @@
 (function () {
   "use strict";
 
-  const el = document.querySelector(".recommended-swipe");
-  el.remove();
+  GM_addStyle(`
+    /* The structural fallback survives changes to the carousel's outer class. */
+    .recommended-swipe,
+    main [class~="container"] > :first-child:has([class*="carousel" i]) {
+      display: none !important;
+    }
 
-  GM_addStyle(
-    ".recommended-container_floor-aside .container>*:nth-of-type(n) { margin-top: 0 !important}"
-  );
+    /* Bilibili offsets cards that originally followed the two-row carousel. */
+    .recommended-container_floor-aside > .container > *,
+    main [class~="container"]:has(> :first-child [class*="carousel" i]) > * {
+      margin-top: 0 !important;
+    }
+  `);
 })();
