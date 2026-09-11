@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      4.5
+// @version      4.6
 // @description  Fast jump and anti-slip position tracking
 // @author       You
 // @match        https://x.com/*
@@ -22,7 +22,7 @@
   let scrollTimer = null;
   let antiSlipTimer = null;
   let coldStartTimer = null;
-  let prevKey = null;
+  let session = { path: null, key: null, tabText: null };
 
   let isReadingActive = false;
   let lastCommittedId = null;
@@ -34,18 +34,56 @@
   function getActiveTabKey() {
     const path = window.location.pathname;
     const directMatch = path.match(/^\/i\/lists\/(\d+)/);
-    if (directMatch) return "list_" + directMatch[1];
-    if (path === "/home" || path === "/") {
+    let key = null;
+    let tabText = null;
+    if (directMatch) {
+      key = "list_" + directMatch[1];
+    } else if (path === "/home" || path === "/") {
       const t = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
+      // X can unmount the tab strip while scrolling. Missing DOM is not a tab switch.
+      if (!t && path === session.path) return session.key;
       if (t) {
-        const text = t.innerText.trim();
-        if (text === "For you" || text === "Following") return null;
-        const href = t.getAttribute("href") || t.closest("a")?.getAttribute("href") || "";
-        const listMatch = href.match(/\/i\/lists\/(\d+)/);
-        return listMatch ? "list_" + listMatch[1] : "text_" + text.replace(/\s+/g, "_");
+        tabText = t.innerText.trim();
+        if (!tabText && path === session.path) return session.key;
+        if (tabText && tabText !== "For you" && tabText !== "Following") {
+          const href = t.getAttribute("href") || t.closest("a")?.getAttribute("href") || "";
+          const listMatch = href.match(/\/i\/lists\/(\d+)/);
+          key = listMatch ? "list_" + listMatch[1] : "text_" + tabText.replace(/\s+/g, "_");
+          // Keep the same storage key if a re-render adds or removes the tab's href.
+          if (path === session.path && tabText === session.tabText &&
+              (!listMatch || session.key?.startsWith("text_"))) {
+            key = session.key;
+          }
+        }
       }
     }
-    return null;
+
+    if (path !== session.path || key !== session.key) {
+      session = { path, key, tabText };
+      clearTrackingTimers();
+      jumping = false;
+      dismissed = false;
+      isReadingActive = false;
+      lastCommittedId = key ? localStorage.getItem(PREFIX + key) : null;
+      idToIndex.clear();
+      maxIdx = 0;
+      if (bar) { bar.remove(); bar = null; }
+    } else {
+      session.tabText = tabText;
+    }
+    return key;
+  }
+
+  function isCurrentSession(expected) {
+    return getActiveTabKey() !== null && session === expected;
+  }
+
+  function clearTrackingTimers() {
+    clearTimeout(scrollTimer);
+    clearTimeout(coldStartTimer);
+    clearTimeout(antiSlipTimer);
+    pendingId = null;
+    updateReturnButton(false);
   }
 
   function idOf(article) {
@@ -73,10 +111,9 @@
     return k ? localStorage.getItem(PREFIX + k) : null; 
   }
   
-  function persist(id) { 
-    const k = getActiveTabKey();
-    if (k) {
-      localStorage.setItem(PREFIX + k, id);
+  function persist(id, expected = session) {
+    if (id && isCurrentSession(expected)) {
+      localStorage.setItem(PREFIX + expected.key, id);
       lastCommittedId = id;
       updateReturnButton(false);
     }
@@ -104,29 +141,38 @@
   }
 
   function onScroll() {
-    if (jumping || !getActiveTabKey()) return;
-    
+    if (!getActiveTabKey() || jumping) return;
+    const expected = session;
+
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => {
+      if (!isCurrentSession(expected) || jumping) return;
       const tid = topId();
       if (!tid) return;
 
       if (!isReadingActive) {
         clearTimeout(coldStartTimer);
         coldStartTimer = setTimeout(() => {
+          if (!isCurrentSession(expected) || jumping) return;
           isReadingActive = true;
-          persist(tid);
+          persist(tid, expected);
           flash("Session Active", "#1d9bf0");
         }, COLD_START_WAIT);
       } else {
-        if (tid !== lastCommittedId && tid !== pendingId) {
+        if (tid === lastCommittedId) {
+          clearTimeout(antiSlipTimer);
+          pendingId = null;
+          updateReturnButton(false);
+        } else if (tid !== pendingId) {
           pendingId = tid;
           updateReturnButton(true);
           
           clearTimeout(antiSlipTimer);
           antiSlipTimer = setTimeout(() => {
-            persist(pendingId);
+            if (!isCurrentSession(expected) || jumping) return;
+            if (topId() === tid) persist(tid, expected);
             pendingId = null;
+            updateReturnButton(false);
           }, SLIP_DELAY);
         }
       }
@@ -151,9 +197,8 @@
   }
 
   async function returnToLast() {
-    if (!lastCommittedId) return;
-    clearTimeout(antiSlipTimer);
-    pendingId = null;
+    if (!getActiveTabKey() || jumping || !lastCommittedId) return;
+    clearTrackingTimers();
 
     const article = findArticle(lastCommittedId);
     if (article) {
@@ -162,8 +207,7 @@
       updateReturnButton(false);
     } else {
       // Fast jump logic: determine direction and jump aggressively
-      await performJump(lastCommittedId, true); 
-      updateReturnButton(false);
+      await performJump(lastCommittedId, true);
     }
   }
 
@@ -175,8 +219,10 @@
   }
 
   async function performJump(target, isFast = false) {
+    if (!getActiveTabKey() || jumping) return false;
+    const expected = session;
+    clearTrackingTimers();
     jumping = true;
-    const k = getActiveTabKey();
     const jumpBtn = document.getElementById("x-pos-jump");
     const originalText = jumpBtn?.textContent;
     if (jumpBtn) jumpBtn.textContent = "Searching...";
@@ -194,7 +240,7 @@
     const maxTries = isFast ? 40 : 60;
 
     for (let i = 0; i < maxTries; i++) {
-      if (getActiveTabKey() !== k) break;
+      if (!isCurrentSession(expected)) return false;
       const article = findArticle(target);
 
       if (article) {
@@ -207,20 +253,25 @@
       await new Promise(r => setTimeout(r, delay));
     }
 
+    if (!isCurrentSession(expected)) return false;
     if (jumpBtn) jumpBtn.textContent = found ? "✓ Found" : "↓ Jump";
     setTimeout(() => {
+      if (!isCurrentSession(expected)) return;
       if (jumpBtn) jumpBtn.textContent = originalText;
       jumping = false;
       refreshLabel();
+      // Capture reading movement that happened during the smooth-scroll cooldown.
+      onScroll();
     }, 1500);
     return found;
   }
 
   async function jump() {
     const target = saved();
-    if (!target) return;
+    if (!target || jumping) return;
+    const expected = session;
     const success = await performJump(target, false); // Normal jump uses smooth sweep
-    if (success) {
+    if (success && isCurrentSession(expected)) {
       isReadingActive = true;
       lastCommittedId = target;
       flash("Reading Active", "#1d9bf0");
@@ -228,8 +279,10 @@
   }
 
   function manualSave() {
+    if (!getActiveTabKey()) return;
     const id = topId();
     if (!id) return;
+    clearTrackingTimers();
     persist(id);
     isReadingActive = true;
     flash("✓ Saved");
@@ -249,7 +302,7 @@
   }
 
   function build() {
-    if (bar) return;
+    if (bar?.isConnected) return;
     bar = document.createElement("div");
     bar.id = "x-pos-bar";
     Object.assign(bar.style, {
@@ -272,6 +325,7 @@
     
     bar.append(lbl, jumpBtn, saveBtn, returnBtn, closeBtn);
     document.body.appendChild(bar);
+    updateReturnButton(pendingId !== null);
   }
 
   function makePill(text, bg, fn) {
@@ -289,17 +343,6 @@
       return;
     }
 
-    if (k !== prevKey) { 
-      dismissed = false; 
-      lastCommittedId = saved(); 
-      prevKey = k;
-      idToIndex.clear();
-      maxIdx = 0;
-      isReadingActive = false; 
-      clearTimeout(coldStartTimer);
-      clearTimeout(antiSlipTimer);
-    }
-    
     if (!dismissed) {
       build();
       refreshLabel();
@@ -309,7 +352,14 @@
   window.addEventListener("scroll", onScroll, { passive: true });
   setInterval(check, 1000);
   document.addEventListener("click", (e) => {
-    if (e.target.closest('[role="tab"]')) setTimeout(check, 100);
+    const tab = e.target.closest('[role="tab"]');
+    if (!tab) return;
+    if (tab.getAttribute("aria-selected") !== "true") {
+      // A deliberate tab switch must not reuse the old key while the new tab loads.
+      session = { path: null, key: null, tabText: null };
+      clearTrackingTimers();
+    }
+    setTimeout(check, 100);
   });
   setTimeout(check, 500);
 })();
