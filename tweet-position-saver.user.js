@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      4.6
+// @version      4.8
 // @description  Fast jump and anti-slip position tracking
 // @author       You
 // @match        https://x.com/*
@@ -15,8 +15,13 @@
   const PREFIX = "x_pos_tab_";
   const SLIP_DELAY = 10000;
   const COLD_START_WAIT = 30 * 60 * 1000;
+  const JUMP_BATCH_SIZE = 2000;
+  const JUMP_STALL_WAIT = 15000;
 
   let jumping = false;
+  let jumpStatus = "↓ Jump";
+  let jumpSearch = null;
+  let autoSavePaused = false;
   let dismissed = false;
   let bar = null;
   let scrollTimer = null;
@@ -62,6 +67,9 @@
       session = { path, key, tabText };
       clearTrackingTimers();
       jumping = false;
+      jumpStatus = "↓ Jump";
+      jumpSearch = null;
+      autoSavePaused = false;
       dismissed = false;
       isReadingActive = false;
       lastCommittedId = key ? localStorage.getItem(PREFIX + key) : null;
@@ -133,6 +141,10 @@
   function refreshLabel() {
     const lbl = document.getElementById("x-pos-lbl");
     if (!lbl) return;
+    if (autoSavePaused && !jumping) {
+      lbl.textContent = "Auto-save paused";
+      return;
+    }
     scanTimeline();
     const tid = topId();
     if (!tid) return;
@@ -141,12 +153,12 @@
   }
 
   function onScroll() {
-    if (!getActiveTabKey() || jumping) return;
+    if (!getActiveTabKey() || jumping || autoSavePaused) return;
     const expected = session;
 
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => {
-      if (!isCurrentSession(expected) || jumping) return;
+      if (!isCurrentSession(expected) || jumping || autoSavePaused) return;
       const tid = topId();
       if (!tid) return;
 
@@ -191,9 +203,14 @@
   }
 
   function findArticle(targetId) {
-    const allLinks = document.querySelectorAll(`a[href*="/status/${targetId}"]`);
-    const targetLink = Array.from(allLinks).find(l => !l.closest('div[role="link"][tabindex="0"]'));
-    return targetLink?.closest("article");
+    const articles = document.querySelectorAll('article[data-testid="tweet"]');
+    return Array.from(articles).find(a => a.offsetHeight !== 0 && idOf(a) === targetId);
+  }
+
+  function updateJumpButton(text) {
+    jumpStatus = text;
+    const btn = document.getElementById("x-pos-jump");
+    if (btn) btn.textContent = text;
   }
 
   async function returnToLast() {
@@ -223,52 +240,86 @@
     const expected = session;
     clearTrackingTimers();
     jumping = true;
-    const jumpBtn = document.getElementById("x-pos-jump");
-    const originalText = jumpBtn?.textContent;
-    if (jumpBtn) jumpBtn.textContent = "Searching...";
+    autoSavePaused = true;
 
-    let found = false;
-    const currentTid = topId();
-    // Determine direction if possible
-    let direction = 1; // Default down
-    if (currentTid && BigInt(target) > BigInt(currentTid)) {
-      direction = -1; // Target is newer, go up
+    let search = jumpSearch;
+    if (!search || search.target !== target) {
+      const currentTid = topId();
+      const direction = currentTid && BigInt(target) > BigInt(currentTid) ? -1 : 1;
+      search = { target, direction, isFast, inspected: new Set(), limit: JUMP_BATCH_SIZE };
+      jumpSearch = search;
+    } else if (search.inspected.size >= search.limit) {
+      // Continue adds one batch; retrying stalled loading keeps the existing budget.
+      search.limit += JUMP_BATCH_SIZE;
     }
 
+    let found = false;
+    const { direction, inspected } = search;
+    isFast = search.isFast;
     const step = isFast ? window.innerHeight * 4 : window.innerHeight * 2;
     const delay = isFast ? 100 : 600;
-    const maxTries = isFast ? 40 : 60;
+    let lastProgressAt = performance.now();
+    let lastScrollY = window.scrollY;
 
-    for (let i = 0; i < maxTries; i++) {
-      if (!isCurrentSession(expected)) return false;
-      const article = findArticle(target);
-
-      if (article) {
-        article.scrollIntoView({ behavior: isFast ? "auto" : "smooth", block: "center" });
-        highlight(article);
-        found = true;
-        break;
+    while (true) {
+      if (!isCurrentSession(expected) || jumpSearch !== search) return false;
+      const previousCount = inspected.size;
+      const articles = document.querySelectorAll('article[data-testid="tweet"]');
+      for (const article of articles) {
+        if (article.offsetHeight === 0) continue;
+        const id = idOf(article);
+        if (!id) continue;
+        inspected.add(id);
+        // A target at the batch boundary still counts as a successful match.
+        if (id === target) {
+          article.scrollIntoView({ behavior: isFast ? "auto" : "smooth", block: "center" });
+          highlight(article);
+          found = true;
+          break;
+        }
+        if (inspected.size >= search.limit) break;
       }
+
+      updateJumpButton(`Searching… ${inspected.size}/${search.limit}`);
+      if (found || inspected.size >= search.limit) break;
+
+      const now = performance.now();
+      const scrollY = window.scrollY;
+      if (inspected.size > previousCount || Math.abs(scrollY - lastScrollY) > 1) {
+        lastProgressAt = now;
+      }
+      lastScrollY = scrollY;
+      // Slow loading does not consume the tweet budget, but a stuck page can stop.
+      if (now - lastProgressAt >= JUMP_STALL_WAIT) break;
+
       window.scrollBy({ top: step * direction, behavior: isFast ? "auto" : "smooth" });
       await new Promise(r => setTimeout(r, delay));
     }
 
-    if (!isCurrentSession(expected)) return false;
-    if (jumpBtn) jumpBtn.textContent = found ? "✓ Found" : "↓ Jump";
+    if (!isCurrentSession(expected) || jumpSearch !== search) return false;
+    if (found) autoSavePaused = false;
+    updateJumpButton(found ? "✓ Found" : inspected.size >= search.limit
+      ? `Not found (${inspected.size}) · Continue`
+      : `Loading stalled (${inspected.size}) · Retry`);
     setTimeout(() => {
-      if (!isCurrentSession(expected)) return;
-      if (jumpBtn) jumpBtn.textContent = originalText;
+      if (!isCurrentSession(expected) || jumpSearch !== search) return;
+      if (found) {
+        jumpSearch = null;
+        updateJumpButton("↓ Jump");
+      }
       jumping = false;
       refreshLabel();
       // Capture reading movement that happened during the smooth-scroll cooldown.
+      // Failed searches leave auto-save paused until a successful Jump or Save.
       onScroll();
     }, 1500);
     return found;
   }
 
   async function jump() {
-    const target = saved();
-    if (!target || jumping) return;
+    if (!getActiveTabKey() || jumping) return;
+    const target = jumpSearch?.target || saved();
+    if (!target) return;
     const expected = session;
     const success = await performJump(target, false); // Normal jump uses smooth sweep
     if (success && isCurrentSession(expected)) {
@@ -284,6 +335,10 @@
     if (!id) return;
     clearTrackingTimers();
     persist(id);
+    jumpSearch = null;
+    jumping = false;
+    autoSavePaused = false;
+    updateJumpButton("↓ Jump");
     isReadingActive = true;
     flash("✓ Saved");
   }
@@ -312,7 +367,7 @@
       boxShadow: "0 4px 12px rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)"
     });
     const lbl = document.createElement("span"); lbl.id = "x-pos-lbl";
-    const jumpBtn = makePill("↓ Jump", "rgba(29,155,240,0.9)", jump);
+    const jumpBtn = makePill(jumpStatus, "rgba(29,155,240,0.9)", jump);
     jumpBtn.id = "x-pos-jump";
     const saveBtn = makePill("📌 Save", "rgba(255,255,255,0.13)", manualSave);
     const returnBtn = makePill("↩ Back", "#e0245e", returnToLast);
