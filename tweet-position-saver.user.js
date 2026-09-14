@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      4.9
+// @version      4.10
 // @description  Bookmark and local-date jumps with anti-slip position tracking
 // @author       You
 // @match        https://x.com/*
@@ -276,7 +276,12 @@
   function refreshLabel() {
     const lbl = document.getElementById("x-pos-lbl");
     if (!lbl) return;
-    if (autoSavePaused && !jumping) {
+    if (jumping) {
+      scanTimeline();
+      lbl.textContent = jumpStatus;
+      return;
+    }
+    if (autoSavePaused) {
       lbl.textContent = "Auto-save paused";
       return;
     }
@@ -345,7 +350,25 @@
   function updateJumpButton(text) {
     jumpStatus = text;
     const btn = document.getElementById("x-pos-jump");
-    if (btn) btn.textContent = text;
+    if (btn) {
+      btn.textContent = jumping ? "Stop" : text;
+      btn.style.background = jumping ? "#b42332" : "rgba(29,155,240,0.9)";
+    }
+    const lbl = document.getElementById("x-pos-lbl");
+    if (lbl && jumping) lbl.textContent = text;
+  }
+
+  function stopJump() {
+    if (!getActiveTabKey() || !jumping || !jumpSearch) return;
+    // Keep the search data but replace its identity: old awaits and cooldowns
+    // must not resume, even if Continue is clicked before they finish.
+    jumpSearch = { ...jumpSearch };
+    jumping = false;
+    autoSavePaused = true;
+    clearTrackingTimers();
+    window.scrollTo({ top: window.scrollY, left: window.scrollX, behavior: "instant" });
+    updateJumpButton(`Stopped (${jumpSearch.inspected.size}/${jumpSearch.limit}) · Continue`);
+    refreshLabel();
   }
 
   async function returnToLast() {
@@ -390,7 +413,6 @@
         // Starting at the top makes this the day's first timeline entry, not just
         // the first matching tweet below the reader's current position.
         window.scrollTo({ top: 0, behavior: "instant" });
-        await new Promise(r => setTimeout(r, 600));
       }
     } else if (search.inspected.size >= search.limit) {
       // Continue adds one batch; retrying stalled loading keeps the existing budget.
@@ -400,6 +422,11 @@
     let found = null;
     let missingDateData = false;
     const { direction, inspected, day } = search;
+    const label = day ? target.slice(5) : "Searching";
+    updateJumpButton(`${label}… ${inspected.size}/${search.limit}`);
+    // Show Stop before waiting. A resumed date jump also lets the viewport settle,
+    // but does not restart from the top.
+    if (day) await new Promise(r => setTimeout(r, 600));
     isFast = search.isFast;
     const step = day ? window.innerHeight * 0.7 : isFast ? window.innerHeight * 4 : window.innerHeight * 2;
     const delay = isFast ? 100 : 600;
@@ -442,7 +469,6 @@
         if (inspected.size >= search.limit) break;
       }
 
-      const label = day ? target.slice(5) : "Searching";
       updateJumpButton(`${label}… ${inspected.size}/${search.limit}${missingDateData ? " · Waiting for dates" : ""}`);
       if (found || inspected.size >= search.limit) break;
 
@@ -469,11 +495,9 @@
       : `Loading stalled (${inspected.size}) · Retry`);
     setTimeout(() => {
       if (!isCurrentSession(expected) || jumpSearch !== search) return;
-      if (found) {
-        jumpSearch = null;
-        updateJumpButton("↓ Jump");
-      }
+      if (found) jumpSearch = null;
       jumping = false;
+      updateJumpButton(found ? "↓ Jump" : jumpStatus);
       refreshLabel();
       // Capture reading movement that happened during the smooth-scroll cooldown.
       // Failed searches leave auto-save paused until a successful Jump or Save.
@@ -551,7 +575,10 @@
       boxShadow: "0 4px 12px rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)"
     });
     const lbl = document.createElement("span"); lbl.id = "x-pos-lbl";
-    const jumpBtn = makePill(jumpStatus, "rgba(29,155,240,0.9)", jump);
+    const jumpBtn = makePill(jumpStatus, "rgba(29,155,240,0.9)", () => {
+      if (jumping) stopJump();
+      else jump();
+    });
     jumpBtn.id = "x-pos-jump";
     const dateInput = document.createElement("input");
     dateInput.id = "x-pos-date";
@@ -578,6 +605,7 @@
     
     bar.append(lbl, jumpBtn, dateInput, dateBtn, saveBtn, returnBtn, closeBtn);
     document.body.appendChild(bar);
+    updateJumpButton(jumpStatus);
     updateReturnButton(pendingId !== null);
   }
 
