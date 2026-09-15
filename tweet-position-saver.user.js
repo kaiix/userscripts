@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      4.10
+// @version      4.11
 // @description  Bookmark and local-date jumps with anti-slip position tracking
 // @author       You
 // @match        https://x.com/*
@@ -18,6 +18,13 @@
   const COLD_START_WAIT = 30 * 60 * 1000;
   const JUMP_BATCH_SIZE = 5000;
   const JUMP_STALL_WAIT = 15000;
+  const UI_KEY = "x_pos_ui";
+  let placement = { side: "right", y: 0.3 };
+  try {
+    const stored = JSON.parse(localStorage.getItem(UI_KEY));
+    if (stored && ["left", "right"].includes(stored.side) &&
+        Number.isFinite(stored.y) && stored.y >= 0 && stored.y <= 1) placement = stored;
+  } catch { /* An unavailable or malformed preference must not hide the controls. */ }
 
   let jumping = false;
   let jumpStatus = "↓ Jump";
@@ -26,6 +33,8 @@
   let autoSavePaused = false;
   let dismissed = false;
   let bar = null;
+  let panelOpen = false;
+  let flashTimer = null;
   let scrollTimer = null;
   let antiSlipTimer = null;
   let coldStartTimer = null;
@@ -206,6 +215,7 @@
       jumpSearch = null;
       autoSavePaused = false;
       dismissed = false;
+      panelOpen = false;
       isReadingActive = false;
       lastCommittedId = key ? localStorage.getItem(PREFIX + key) : null;
       idToIndex.clear();
@@ -274,22 +284,50 @@
   }
 
   function refreshLabel() {
-    const lbl = document.getElementById("x-pos-lbl");
-    if (!lbl) return;
-    if (jumping) {
-      scanTimeline();
-      lbl.textContent = jumpStatus;
-      return;
-    }
-    if (autoSavePaused) {
-      lbl.textContent = "Auto-save paused";
-      return;
-    }
+    if (!bar) return;
     scanTimeline();
-    const tid = topId();
-    if (!tid) return;
-    const idx = idToIndex.get(tid);
-    lbl.textContent = idx ? `#${idx}` : "";
+    updateControls();
+  }
+
+  function updateControls() {
+    if (!bar) return;
+    const bookmark = session.key ? localStorage.getItem(PREFIX + session.key) : null;
+    const current = topId();
+    const count = jumpSearch ? jumpSearch.inspected.size : idToIndex.get(current);
+    const readingStatus = pendingId ? "Waiting for a stable position" + (lastCommittedId ? " · Back available" : "")
+      : "Auto-save active";
+    const status = jumping ? jumpStatus : autoSavePaused ? `${jumpStatus} · Auto-save paused`
+      : isReadingActive ? readingStatus : bookmark ? "Jump or Save to start auto-saving" : "No bookmark yet · Save to start";
+    bar.dataset.mode = jumping ? "searching" : autoSavePaused ? "paused" : isReadingActive ? "reading" : "idle";
+    const label = bar.querySelector("#x-pos-lbl");
+    const notice = bar.querySelector("#x-pos-notice");
+    label.textContent = notice.hidden ? status : notice.textContent;
+    const counter = bar.querySelector("#x-pos-count");
+    counter.textContent = count == null ? "—" : count < 1000 ? String(count)
+      : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(count).toLowerCase();
+    counter.title = jumpSearch ? `${jumpSearch.inspected.size} / ${jumpSearch.limit} inspected · ${status}`
+      : count ? `Timeline #${count} · ${status}` : status;
+    counter.setAttribute("aria-label", counter.title);
+    const main = bar.querySelector("#x-pos-jump");
+    setIcon(main, jumping ? "stop" : jumpSearch ? "play" : "jump");
+    main.title = jumping ? `Stop · ${jumpStatus}` : jumpSearch ? jumpStatus : "Jump to saved bookmark";
+    main.setAttribute("aria-label", main.title);
+    main.disabled = !jumping && !jumpSearch && !bookmark;
+    if (jumping && ["x-pos-bookmark", "x-pos-date", "x-pos-go"].includes(document.activeElement?.id)) {
+      main.focus({ preventScroll: true });
+    }
+    bar.querySelector("#x-pos-bookmark").disabled = jumping || !bookmark;
+    bar.querySelector("#x-pos-date").disabled = jumping;
+    bar.querySelector("#x-pos-date").max = localDate();
+    bar.querySelector("#x-pos-go").disabled = jumping;
+    for (const button of bar.querySelectorAll("[data-save]")) button.disabled = !current;
+    const savedLabel = bar.querySelector("#x-pos-saved");
+    savedLabel.textContent = bookmark ? "…" + bookmark.slice(-8) : "None";
+    savedLabel.title = bookmark || "No saved bookmark";
+    bar.querySelector("#x-pos-date-note").textContent = jumping
+      ? "Stop the search before choosing another date."
+      : "Local time. Reposts use their repost date. Reload X after installing to capture date data.";
+    positionUI();
   }
 
   function onScroll() {
@@ -335,11 +373,8 @@
   function updateReturnButton(show) {
     const btn = document.getElementById("x-pos-return");
     if (!btn) return;
-    if (show && lastCommittedId) {
-      btn.style.display = "inline-flex";
-    } else {
-      btn.style.display = "none";
-    }
+    btn.hidden = !(show && lastCommittedId);
+    positionUI();
   }
 
   function findArticle(targetId) {
@@ -349,13 +384,9 @@
 
   function updateJumpButton(text) {
     jumpStatus = text;
-    const btn = document.getElementById("x-pos-jump");
-    if (btn) {
-      btn.textContent = jumping ? "Stop" : text;
-      btn.style.background = jumping ? "#b42332" : "rgba(29,155,240,0.9)";
-    }
-    const lbl = document.getElementById("x-pos-lbl");
-    if (lbl && jumping) lbl.textContent = text;
+    clearTimeout(flashTimer);
+    if (bar) bar.querySelector("#x-pos-notice").hidden = true;
+    updateControls();
   }
 
   function stopJump() {
@@ -550,71 +581,295 @@
     flash("✓ Saved");
   }
 
-  function flash(msg, color) {
-    const lbl = document.getElementById("x-pos-lbl");
-    if (!lbl) return;
-    const old = lbl.textContent;
-    lbl.textContent = msg;
-    lbl.style.color = color || "#17bf63";
-    setTimeout(() => {
-      lbl.textContent = old;
-      lbl.style.color = "";
+  function flash(msg, color = "#8bd6b2") {
+    if (!bar) return;
+    const root = bar;
+    const notice = root.querySelector("#x-pos-notice");
+    notice.textContent = msg;
+    notice.style.color = color;
+    notice.hidden = false;
+    updateControls();
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      if (bar !== root) return;
+      notice.hidden = true;
       refreshLabel();
     }, 2000);
   }
 
+  const icons = {
+    bookmark: '<path d="M6 20V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v15l-6-4z"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    play: '<path d="m8 5 11 7-11 7z"/>',
+    jump: '<path d="M12 3v13m-5-5 5 5 5-5M5 18v3h14v-3"/>',
+    save: '<path d="M6 20V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v15l-6-4zM9 9l2 2 4-4"/>',
+    calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 11h18"/>',
+    back: '<path d="m9 5-6 6 6 6M3 11h11a6 6 0 0 1 6 6v2"/>',
+    close: '<path d="m6 6 12 12M6 18 18 6"/>',
+    grip: '<path d="M5 8h.01M12 8h.01M19 8h.01M5 16h.01M12 16h.01M19 16h.01" stroke-width="3"/>',
+    left: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+    right: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+    hide: '<path d="m3 3 18 18M10 5a10 10 0 0 1 11 7 15 15 0 0 1-4 5M6 6a15 15 0 0 0-3 6 10 10 0 0 0 11 7M10 10a3 3 0 0 0 4 4"/>',
+  };
+
+  function setIcon(button, name) {
+    if (button.dataset.icon === name) return;
+    button.dataset.icon = name;
+    // Only authored SVG paths enter HTML; bookmark IDs and status use textContent.
+    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
+  }
+
+  function makeButton(label, glyph, fn, text = "") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    if (glyph) setIcon(button, glyph);
+    if (text) {
+      button.className = "x-pos-text";
+      const span = document.createElement("span");
+      span.textContent = text;
+      button.append(span);
+    }
+    button.onclick = e => { e.stopPropagation(); fn(); };
+    return button;
+  }
+
+  function savePlacement() {
+    try { localStorage.setItem(UI_KEY, JSON.stringify(placement)); }
+    catch { /* Keep the current placement in memory when storage is unavailable. */ }
+  }
+
+  function clamp(value, min, max) { return Math.min(Math.max(value, min), Math.max(min, max)); }
+
+  function positionUI() {
+    if (!bar?.isConnected) return;
+    bar.dataset.side = placement.side;
+    bar.style[placement.side] = "16px";
+    bar.style[placement.side === "left" ? "right" : "left"] = "auto";
+    // Reserve the bottom plugin area for both the rail and its expanded panel.
+    bar.style.top = `${clamp(placement.y * innerHeight, 12, innerHeight - bar.offsetHeight - 96)}px`;
+    const panel = bar.querySelector("#x-pos-panel");
+    if (!panel || panel.hidden) return;
+    panel.style.width = `${Math.min(288, innerWidth - 84)}px`;
+    panel.style.maxHeight = `${Math.max(100, innerHeight - 116)}px`;
+    panel.style.top = `${clamp(bar.offsetTop, 12, innerHeight - panel.offsetHeight - 96)}px`;
+    panel.style[placement.side] = "70px";
+    panel.style[placement.side === "left" ? "right" : "left"] = "auto";
+  }
+
+  function setPanel(open, focus = true, date = false) {
+    if (!bar) return;
+    panelOpen = open;
+    bar.dataset.open = String(open);
+    bar.querySelector("#x-pos-panel").hidden = !open;
+    const toggle = bar.querySelector("#x-pos-toggle");
+    toggle.setAttribute("aria-expanded", String(open));
+    updateControls();
+    if (focus) {
+      const input = bar.querySelector("#x-pos-date");
+      const target = open ? date && !input.disabled ? input : bar.querySelector("#x-pos-panel-close") : toggle;
+      target.focus({ preventScroll: true });
+    }
+  }
+
+  function setDismissed(value) {
+    if (!bar) return;
+    dismissed = value;
+    bar.dataset.dismissed = String(value);
+    setPanel(false, false);
+    bar.querySelector(value ? "#x-pos-restore" : "#x-pos-toggle").focus({ preventScroll: true });
+  }
+
   function build() {
     if (bar?.isConnected || !document.body) return;
-    bar = document.createElement("div");
-    bar.id = "x-pos-bar";
-    Object.assign(bar.style, {
-      position: "fixed", bottom: "20px", right: "20px", display: "flex", alignItems: "center",
-      flexWrap: "wrap", maxWidth: "calc(100vw - 40px)", boxSizing: "border-box",
-      gap: "8px", background: "rgba(0,0,0,0.85)", color: "#fff", padding: "8px 12px",
-      borderRadius: "14px", fontFamily: 'sans-serif', fontSize: "13px", zIndex: "9999",
-      boxShadow: "0 4px 12px rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)"
-    });
-    const lbl = document.createElement("span"); lbl.id = "x-pos-lbl";
-    const jumpBtn = makePill(jumpStatus, "rgba(29,155,240,0.9)", () => {
-      if (jumping) stopJump();
-      else jump();
-    });
-    jumpBtn.id = "x-pos-jump";
+    const root = document.createElement("div");
+    bar = root;
+    root.id = "x-pos-bar";
+    root.setAttribute("role", "region");
+    root.setAttribute("aria-label", "Reading position");
+    root.dataset.dismissed = String(dismissed);
+    const style = document.createElement("style");
+    style.textContent = `
+      #x-pos-bar, #x-pos-bar * { box-sizing: border-box; }
+      #x-pos-bar { position: fixed; width: 44px; z-index: 9999; color: #eff3f5;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color-scheme: dark; font-variant-numeric: tabular-nums; text-align: left; }
+      #x-pos-bar [hidden] { display: none !important; }
+      #x-pos-bar ::selection { background: #294b65; color: #fff; }
+      #x-pos-bar button { appearance: none; display: inline-flex; align-items: center; justify-content: center;
+        flex: none; gap: 6px; width: 34px; height: 34px; margin: 0; padding: 7px; border: 0; border-radius: 8px;
+        background: transparent; color: #b8c5cf; font: inherit; font-weight: 550; cursor: pointer; }
+      #x-pos-bar button:hover:not(:disabled) { background: #2a3843; color: #fff; }
+      #x-pos-bar button:disabled { opacity: .45; cursor: not-allowed; }
+      #x-pos-bar button:focus-visible, #x-pos-bar input:focus-visible { outline: 2px solid #80c8fa; outline-offset: 2px; }
+      #x-pos-bar svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor;
+        stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+      #x-pos-rail { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 5px;
+        background: #17212a; border-radius: 12px; box-shadow: 0 7px 26px #0009;
+        max-height: calc(100dvh - 116px); overflow-y: auto; scrollbar-width: none; }
+      #x-pos-bar #x-pos-grip { height: 24px; touch-action: none; cursor: grab; color: #9bafbd; }
+      #x-pos-bar #x-pos-grip:active { cursor: grabbing; }
+      #x-pos-grip svg { width: 14px; height: 14px; }
+      #x-pos-count { font-size: 10px; line-height: 14px; color: #b4c8d7; }
+      #x-pos-bar #x-pos-jump, #x-pos-bar #x-pos-bookmark { background: #183246; color: #a4d9fc; }
+      #x-pos-bar[data-mode=searching] #x-pos-jump { background: #45252c; color: #ffb5bc; }
+      #x-pos-bar[data-mode=reading] #x-pos-toggle { color: #8bd6b2; }
+      #x-pos-bar[data-mode=paused] #x-pos-toggle { color: #e0b979; }
+      #x-pos-bar #x-pos-toggle[aria-expanded=true] { background: #203d52; }
+      #x-pos-bar .x-pos-separator { width: 22px; height: 1px; background: #33404b; margin: 2px 0; }
+      #x-pos-panel { position: fixed; padding: 16px; border-radius: 12px; background: #151a1f;
+        box-shadow: 0 12px 48px #000a; overflow-y: auto; overscroll-behavior: contain;
+        scrollbar-width: thin; scrollbar-color: #4a5966 #151a1f; }
+      #x-pos-bar .x-pos-heading, #x-pos-bar .x-pos-saved, #x-pos-bar .x-pos-placement,
+      #x-pos-bar .x-pos-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      #x-pos-bar h2 { margin: 0; font: inherit; font-size: 14px; font-weight: 600; }
+      #x-pos-bar #x-pos-panel-close { width: 28px; height: 28px; margin-right: -5px; }
+      #x-pos-lbl { display: block; margin: 10px 0 14px; color: #b4c8d7; font-size: 12px; overflow-wrap: anywhere; }
+      #x-pos-bar .x-pos-saved { margin-bottom: 12px; font-size: 12px; color: #a1afba; }
+      #x-pos-saved { color: #eff3f5; font-weight: 500; }
+      #x-pos-bar .x-pos-buttons, #x-pos-bar .x-pos-date-row { display: flex; gap: 8px; }
+      #x-pos-bar .x-pos-text { width: auto; padding: 0 10px; font-size: 12px; }
+      #x-pos-bar .x-pos-buttons button { flex: 1; background: #26313a; color: #e5eef4; }
+      #x-pos-bar #x-pos-return { margin-top: 8px; padding-left: 0; }
+      #x-pos-bar .x-pos-date-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid #303a43; }
+      #x-pos-bar label { display: block; margin-bottom: 8px; font-size: 12px; color: #d0dce5; }
+      #x-pos-date { flex: 1; width: 0; min-width: 0; height: 35px; border: 1px solid #4a5966; border-radius: 7px;
+        padding: 0 8px; background: #0c1217; color: #edf4f8; font: inherit; caret-color: #a4d9fc; }
+      #x-pos-bar #x-pos-go { background: #183246; color: #a4d9fc; height: 35px; }
+      #x-pos-date-note { margin: 9px 0 0; font-size: 11px; line-height: 1.7; color: #a4b6c4; }
+      #x-pos-bar .x-pos-placement { border-top: 1px solid #303a43; margin-top: 14px; padding-top: 10px; }
+      #x-pos-bar .x-pos-placement > span { margin-right: auto; font-size: 12px; color: #a4b6c4; }
+      #x-pos-bar .x-pos-placement button { width: 28px; height: 28px; }
+      #x-pos-bar .x-pos-placement button[aria-pressed=true] { background: #293c49; color: #afe0ff; }
+      #x-pos-bar .x-pos-footer { margin-top: 8px; }
+      #x-pos-bar .x-pos-footer button { height: 28px; padding: 0; font-size: 11px; }
+      #x-pos-bar .x-pos-footer svg { width: 14px; height: 14px; }
+      #x-pos-notice { position: absolute; top: 0; width: min(240px, calc(100vw - 90px)); padding: 10px 12px;
+        background: #17212a; box-shadow: 0 7px 26px #0009; border-radius: 8px; font-size: 12px; }
+      #x-pos-bar[data-side=right] #x-pos-notice { right: 54px; }
+      #x-pos-bar[data-side=left] #x-pos-notice { left: 54px; }
+      #x-pos-bar #x-pos-restore { display: none; width: 44px; height: 44px; background: #17212a;
+        border-radius: 12px; box-shadow: 0 7px 26px #0009; }
+      #x-pos-bar[data-dismissed=true] #x-pos-rail, #x-pos-bar[data-dismissed=true] #x-pos-notice { display: none; }
+      #x-pos-bar[data-open=true] #x-pos-notice { width: 1px; height: 1px; padding: 0;
+        overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+      #x-pos-bar[data-dismissed=true] #x-pos-restore { display: inline-flex; }
+      @media (max-width: 360px) { #x-pos-date { font-size: 11px; } }
+    `;
+    const rail = document.createElement("div");
+    rail.id = "x-pos-rail";
+    const grip = makeButton("Drag vertically · Arrow keys move/dock · Home resets height", "grip", () => {});
+    grip.id = "x-pos-grip";
+    let drag = null;
+    function move(top) {
+      placement.y = clamp(top, 12, innerHeight - root.offsetHeight - 96) / innerHeight;
+      positionUI();
+    }
+    grip.onpointerdown = e => {
+      if (e.button !== 0 || drag) return;
+      setPanel(false, false);
+      drag = { id: e.pointerId, y: e.clientY, top: root.offsetTop };
+      grip.setPointerCapture(e.pointerId);
+    };
+    grip.onpointermove = e => {
+      if (drag?.id === e.pointerId && bar === root) move(drag.top + e.clientY - drag.y);
+    };
+    grip.onpointerup = grip.onpointercancel = grip.onlostpointercapture = e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const id = drag.id;
+      drag = null;
+      if (grip.hasPointerCapture(id)) grip.releasePointerCapture(id);
+      savePlacement();
+    };
+    grip.onkeydown = e => {
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home"].includes(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") dock(e.key === "ArrowLeft" ? "left" : "right");
+      else {
+        move(e.key === "Home" ? innerHeight * 0.3 : root.offsetTop + (e.key === "ArrowUp" ? -12 : 12));
+        savePlacement();
+      }
+    };
+    const toggle = makeButton("Reading position controls", "bookmark", () => setPanel(!panelOpen));
+    toggle.id = "x-pos-toggle";
+    toggle.setAttribute("aria-controls", "x-pos-panel");
+    const counter = document.createElement("span");
+    counter.id = "x-pos-count";
+    const main = makeButton("Jump to saved bookmark", "jump", () => jumping ? stopJump() : jump());
+    main.id = "x-pos-jump";
+    const separator = document.createElement("div");
+    separator.className = "x-pos-separator";
+    const calendar = makeButton("Jump to date", "calendar", () => setPanel(true, true, true));
+    const save = makeButton("Save current position", "save", manualSave);
+    save.dataset.save = "";
+    rail.append(grip, toggle, counter, main, separator, calendar, save);
+
+    const panel = document.createElement("section");
+    panel.id = "x-pos-panel";
+    panel.setAttribute("aria-label", "Reading position controls");
+    // This template contains no timeline or user-supplied data.
+    panel.innerHTML = `<div class="x-pos-heading"><h2>Reading position</h2></div>
+      <span id="x-pos-lbl"></span>
+      <div class="x-pos-saved"><span>Saved bookmark</span><strong id="x-pos-saved"></strong></div>
+      <div class="x-pos-buttons"></div>
+      <div class="x-pos-date-section"><label for="x-pos-date">Jump to date · Local time</label>
+        <div class="x-pos-date-row"></div><p id="x-pos-date-note"></p></div>
+      <div class="x-pos-placement"><span>Dock</span></div><div class="x-pos-footer"></div>`;
+    const close = makeButton("Close controls", "close", () => setPanel(false));
+    close.id = "x-pos-panel-close";
+    panel.querySelector(".x-pos-heading").append(close);
+    const bookmark = makeButton("Jump to saved bookmark", "jump", () => jump(saved()), "Jump");
+    bookmark.id = "x-pos-bookmark";
+    const panelSave = makeButton("Save current position", "save", manualSave, "Save");
+    panelSave.dataset.save = "";
+    const buttons = panel.querySelector(".x-pos-buttons");
+    buttons.append(bookmark, panelSave);
+    const back = makeButton("Back to previous position", "back", returnToLast, "Back to previous position");
+    back.id = "x-pos-return";
+    back.hidden = true;
+    buttons.after(back);
     const dateInput = document.createElement("input");
     dateInput.id = "x-pos-date";
     dateInput.type = "date";
     dateInput.required = true;
     dateInput.min = "2006-03-21";
-    dateInput.max = localDate();
     dateInput.value = selectedDate || localDate();
-    dateInput.setAttribute("aria-label", "Jump to date in local time");
-    dateInput.title = "Local time; reposts use their repost date. Reload X after installing to capture timeline dates.";
-    Object.assign(dateInput.style, { colorScheme: "dark", background: "#242424", color: "#fff",
-      border: "1px solid #666", borderRadius: "6px", padding: "5px", font: "inherit", minWidth: "0" });
+    dateInput.setAttribute("aria-describedby", "x-pos-date-note");
     dateInput.oninput = () => { selectedDate = dateInput.value; dateInput.setCustomValidity(""); };
-    const dateBtn = makePill("Go to date", "rgba(29,155,240,0.9)", jumpToDate);
     dateInput.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); jumpToDate(); } };
-    const saveBtn = makePill("📌 Save", "rgba(255,255,255,0.13)", manualSave);
-    const returnBtn = makePill("↩ Back", "#e0245e", returnToLast);
-    returnBtn.id = "x-pos-return";
-    returnBtn.style.display = "none";
-    const closeBtn = document.createElement("span"); 
-    closeBtn.textContent = "✕";
-    closeBtn.style.cursor = "pointer";
-    closeBtn.onclick = () => { dismissed = true; bar.remove(); bar = null; };
-    
-    bar.append(lbl, jumpBtn, dateInput, dateBtn, saveBtn, returnBtn, closeBtn);
-    document.body.appendChild(bar);
-    updateJumpButton(jumpStatus);
+    const go = makeButton("Go to date", null, jumpToDate, "Go");
+    go.id = "x-pos-go";
+    panel.querySelector(".x-pos-date-row").append(dateInput, go);
+    function dock(side) {
+      placement.side = side;
+      for (const button of panel.querySelectorAll("[data-dock]")) {
+        button.setAttribute("aria-pressed", String(button.dataset.dock === side));
+      }
+      positionUI();
+      savePlacement();
+    }
+    for (const side of ["left", "right"]) {
+      const button = makeButton(`Dock ${side}`, side, () => dock(side));
+      button.dataset.dock = side;
+      button.setAttribute("aria-pressed", String(placement.side === side));
+      panel.querySelector(".x-pos-placement").append(button);
+    }
+    panel.querySelector(".x-pos-footer").append(
+      makeButton("Hide controls; automatic recording is unchanged", "hide", () => setDismissed(true), "Hide"),
+      makeButton("Reset position", null, () => { placement.y = 0.3; dock("right"); }, "Reset position"),
+    );
+    const restore = makeButton("Show reading position controls", "bookmark", () => setDismissed(false));
+    restore.id = "x-pos-restore";
+    const notice = document.createElement("div");
+    notice.id = "x-pos-notice";
+    notice.setAttribute("role", "status");
+    notice.hidden = true;
+    root.append(style, rail, panel, restore, notice);
+    document.body.append(root);
+    setPanel(panelOpen, false);
     updateReturnButton(pendingId !== null);
-  }
-
-  function makePill(text, bg, fn) {
-    const b = document.createElement("button");
-    b.textContent = text;
-    Object.assign(b.style, { background: bg, color: "#fff", border: "none", padding: "5px 12px", borderRadius: "9999px", cursor: "pointer", fontWeight: "bold", display: "inline-flex", alignItems: "center" });
-    b.onclick = (e) => { e.stopPropagation(); fn(); };
-    return b;
   }
 
   function check() {
@@ -624,15 +879,22 @@
       return;
     }
 
-    if (!dismissed) {
-      build();
-      refreshLabel();
-    }
+    build();
+    if (!dismissed) refreshLabel();
   }
 
   window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", positionUI);
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && panelOpen) {
+      e.preventDefault();
+      e.stopPropagation();
+      setPanel(false);
+    }
+  });
   setInterval(check, 1000);
   document.addEventListener("click", (e) => {
+    if (panelOpen && bar && !e.composedPath().includes(bar)) setPanel(false, false);
     const tab = e.target.closest('[role="tab"]');
     if (!tab) return;
     if (tab.getAttribute("aria-selected") !== "true") {
