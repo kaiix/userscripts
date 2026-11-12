@@ -1,163 +1,76 @@
 // ==UserScript==
 // @name        Gemini Extended Thinking
-// @version     1.0.0
-// @description Enable Extended thinking by default in new Gemini chats
+// @version     2.0.0
+// @description Keep the last selected Gemini model and thinking level in new chats
 // @author      kaiix
 // @namespace   https://github.com/kaiix
 // @license     MIT
-// @match       https://gemini.google.com/app*
+// @match       https://gemini.google.com/*
 // @icon        https://www.google.com/s2/favicons?sz=64&domain=gemini.google.com
 // @grant       none
-// @run-at      document-idle
+// @run-at      document-start
 // @updateURL   https://raw.githubusercontent.com/kaiix/userscripts/main/gemini-extended-thinking.user.js
 // @downloadURL https://raw.githubusercontent.com/kaiix/userscripts/main/gemini-extended-thinking.user.js
 // @supportURL  https://github.com/kaiix/userscripts/issues
 // ==/UserScript==
 
+// Gemini already saves the last selected mode (user setting
+// `last_selected_mode_id_on_web`) and thinking level (user setting
+// `last_selected_thinking_level_on_web`) to the account, and restores the mode
+// in new chats. Restoring the thinking level is gated behind a client feature
+// flag that is off by default, so new chats fall back to the first level (Low).
+// This script turns that flag on before Gemini boots, so Gemini's own code
+// restores the saved thinking level. No menus are opened or clicked.
+
 (function () {
   "use strict";
 
-  const MODE_BUTTON_SELECTOR = '[data-test-id="bard-mode-menu-button"]';
-  const MODE_ITEM_SELECTOR =
-    'gem-menu-item, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
-  const EXTENDED_THINKING = "extended thinking";
-  const MENU_TIMEOUT_MS = 3000;
+  const LOG_PREFIX = "[Gemini Extended Thinking]";
+  const FLAGS_KEY = "TSDtV";
+  const FORCED_FLAGS = {
+    // Restore `last_selected_thinking_level_on_web` when a mode is selected.
+    45805877: true,
+  };
 
-  let configuredButton = null;
-  let configuring = false;
-  let lastPathname = location.pathname;
-  let scheduled = false;
+  function patchConfig(data) {
+    if (!data || typeof data[FLAGS_KEY] !== "string") return false;
 
-  function normalizeText(value) {
-    return value?.replace(/\s+/g, " ").trim().toLowerCase() || "";
-  }
-
-  function findModeButton() {
-    return (
-      document.querySelector(MODE_BUTTON_SELECTOR) ||
-      Array.from(document.querySelectorAll("button")).find((button) =>
-        /open (mode|model) picker|switch model/i.test(
-          button.getAttribute("aria-label") || ""
-        )
-      )
-    );
-  }
-
-  function findExtendedThinkingItem() {
-    return Array.from(document.querySelectorAll(MODE_ITEM_SELECTOR)).find(
-      (item) =>
-        item.getClientRects().length > 0 &&
-        normalizeText(item.textContent).startsWith(EXTENDED_THINKING)
-    );
-  }
-
-  function waitForExtendedThinkingItem() {
-    return new Promise((resolve) => {
-      const existingItem = findExtendedThinkingItem();
-      if (existingItem) {
-        resolve(existingItem);
-        return;
-      }
-
-      const observer = new MutationObserver(() => {
-        const item = findExtendedThinkingItem();
-        if (!item) return;
-
-        observer.disconnect();
-        clearTimeout(timeout);
-        resolve(item);
-      });
-      const timeout = setTimeout(() => {
-        observer.disconnect();
-        resolve(null);
-      }, MENU_TIMEOUT_MS);
-
-      observer.observe(document.body, { childList: true, subtree: true });
-    });
-  }
-
-  function isSelected(item) {
-    return (
-      item.classList.contains("selected") ||
-      item.getAttribute("aria-checked") === "true" ||
-      item.getAttribute("aria-selected") === "true"
-    );
-  }
-
-  function isExtendedThinkingActive(button) {
-    return normalizeText(
-      `${button.textContent} ${button.getAttribute("aria-label") || ""}`
-    ).includes("extended");
-  }
-
-  async function enableExtendedThinking() {
-    if (configuring || configuredButton?.isConnected) return;
-
-    const button = findModeButton();
-    if (
-      !button ||
-      button === configuredButton ||
-      button.disabled ||
-      button.getAttribute("aria-disabled") === "true"
-    ) {
-      return;
-    }
-
-    configuredButton = button;
-    if (isExtendedThinkingActive(button)) return;
-
-    configuring = true;
     try {
-      let item = findExtendedThinkingItem();
-      const openedMenu = !item;
+      const config = JSON.parse(data[FLAGS_KEY]);
+      if (!config?.flags) return false;
 
-      if (openedMenu) {
-        button.click();
-        item = await waitForExtendedThinkingItem();
-      }
-
-      if (!item) {
-        if (openedMenu) button.click();
-        console.warn(
-          "[Gemini Extended Thinking] Extended thinking is not available."
-        );
-        return;
-      }
-
-      if (isSelected(item)) {
-        if (openedMenu) button.click();
-        return;
-      }
-
-      item.click();
-    } finally {
-      configuring = false;
+      Object.assign(config.flags, FORCED_FLAGS);
+      data[FLAGS_KEY] = JSON.stringify(config);
+      return true;
+    } catch {
+      return false;
     }
   }
 
-  function schedule() {
-    if (scheduled || configuredButton?.isConnected) return;
-
-    scheduled = true;
-    setTimeout(() => {
-      scheduled = false;
-      enableExtendedThinking();
-    });
+  function warnUnpatched() {
+    console.warn(`${LOG_PREFIX} Could not patch Gemini feature flags.`);
   }
 
-  const observer = new MutationObserver(schedule);
-  observer.observe(document.body, { childList: true, subtree: true });
+  if ("WIZ_global_data" in window) {
+    // Injected after Gemini's config script ran; the flags may already be read.
+    if (!patchConfig(window.WIZ_global_data)) warnUnpatched();
+    return;
+  }
 
-  setInterval(() => {
-    if (location.pathname === lastPathname) return;
-
-    const enteredNewChat = location.pathname === "/app";
-    lastPathname = location.pathname;
-    if (!enteredNewChat) return;
-
-    configuredButton = null;
-    schedule();
-  }, 500);
-
-  schedule();
+  Object.defineProperty(window, "WIZ_global_data", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return undefined;
+    },
+    set(value) {
+      if (!patchConfig(value)) warnUnpatched();
+      Object.defineProperty(window, "WIZ_global_data", {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value,
+      });
+    },
+  });
 })();
