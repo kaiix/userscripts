@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter Timeline Position Saver
 // @namespace    http://tampermonkey.net/
-// @version      4.11
+// @version      4.12
 // @description  Bookmark and local-date jumps with anti-slip position tracking
 // @author       You
 // @match        https://x.com/*
@@ -18,6 +18,9 @@
   const COLD_START_WAIT = 30 * 60 * 1000;
   const JUMP_BATCH_SIZE = 5000;
   const JUMP_STALL_WAIT = 15000;
+  const JUMP_DATE_WAIT = 5000;
+  const JUMP_PASSED_DATE = 3;
+  const compactNumber = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
   const UI_KEY = "x_pos_ui";
   let placement = { side: "right", y: 0.3 };
   try {
@@ -39,6 +42,7 @@
   let antiSlipTimer = null;
   let coldStartTimer = null;
   let session = { path: null, key: null, tabText: null };
+  let suspended = false;
 
   let isReadingActive = false;
   let lastCommittedId = null;
@@ -47,16 +51,38 @@
   const idToIndex = new Map();
   let maxIdx = 0;
   const listEntries = new Map();
+  const homeListKeys = new Map();
 
   // Observe only List responses. Never replay requests or change their bodies.
   // Repost dates live on the outer tweet; sortIndex is an ordering key, not a date.
-  function listRequestKey(input) {
+  function selectedHomeTab() {
+    const tab = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
+    if (!tab) return null;
+    const text = tab.innerText.trim();
+    const tabs = tab.closest('[role="tablist"]').querySelectorAll('[role="tab"]');
+    // For you and Following lead the strip in every UI language; their English
+    // names still cover a strip that X renders in another order.
+    const builtIn = Array.prototype.indexOf.call(tabs, tab) < 2 || text === "For you" || text === "Following";
+    return { tab, text, builtIn };
+  }
+
+  function activeHomeListTabText() {
+    if (!["/", "/home"].includes(window.location.pathname)) return null;
+    const selected = selectedHomeTab();
+    return selected?.text && !selected.builtIn ? selected.text : null;
+  }
+
+  function listRequestInfo(input) {
     try {
       const url = new URL(input?.url || input, window.location.href);
       if (!/(^|\.)(x|twitter)\.com$/.test(url.hostname) ||
           !/\/graphql\/[^/]+\/ListLatestTweetsTimeline$/.test(url.pathname)) return null;
       const id = JSON.parse(url.searchParams.get("variables"))?.listId;
-      return /^\d+$/.test(id) ? "list_" + id : null;
+      return /^\d+$/.test(id) ? {
+        key: "list_" + id,
+        path: window.location.pathname,
+        tabText: activeHomeListTabText()
+      } : null;
     } catch { return null; }
   }
 
@@ -71,9 +97,15 @@
     return { id: original?.rest_id || tweet.rest_id, time };
   }
 
-  function captureListResponse(key, data) {
+  function captureListResponse(request, data) {
     const instructions = data?.data?.list?.tweets_timeline?.timeline?.instructions;
     if (!Array.isArray(instructions)) return;
+    const { key } = request;
+    const tabText = request.tabText ||
+      (request.path === window.location.pathname ? activeHomeListTabText() : null);
+    // Home's pinned List tabs do not consistently expose a URL. Associate the
+    // selected tab at request time with the listId that X sent on its behalf.
+    if (tabText) homeListKeys.set(tabText, key);
     let cache = listEntries.get(key);
     if (!cache) {
       cache = { entries: new Map(), byTweet: new Map() };
@@ -88,13 +120,16 @@
       }
       cache.entries.delete(entryId);
     }
-    function store(entryId, members, ignored = false) {
+    function store(entryId, members, ignored = false, sortIndex = null) {
       remove(entryId);
-      if (!members.length || members.some(m => !m)) return;
+      // An unavailable context tweet has no article; it must not hide the dates
+      // of the conversation's other members.
+      members = members.filter(Boolean);
+      if (!members.length) return;
       // A conversation's newest member is its timeline anchor; earlier members
       // are context, even when their dates happen to match the requested day.
       const primary = members.reduce((a, b) => b.time >= a.time ? b : a);
-      const entry = { entryId, members, primary, ignored };
+      const entry = { entryId, members, primary, ignored, sortIndex };
       cache.entries.set(entryId, entry);
       for (const member of members) {
         if (!cache.byTweet.has(member.id)) cache.byTweet.set(member.id, new Map());
@@ -108,7 +143,8 @@
       if (instruction.type === "TimelineAddToModule") {
         const old = cache.entries.get(instruction.moduleEntryId);
         if (old) store(old.entryId, [...old.members,
-          ...(instruction.moduleItems || []).map(i => timelineTweet(i.item?.itemContent))], old.ignored);
+          ...(instruction.moduleItems || []).map(i => timelineTweet(i.item?.itemContent))],
+          old.ignored, old.sortIndex);
       }
       const entries = instruction.entries || (instruction.entry ? [instruction.entry] : []);
       for (const entry of entries) {
@@ -116,9 +152,10 @@
         if (!entry.entryId || !content) continue;
         const ignored = instruction.type === "TimelinePinEntry" || !!content.itemContent?.promotedMetadata;
         if (content.itemContent) {
-          store(entry.entryId, [timelineTweet(content.itemContent)], ignored);
+          store(entry.entryId, [timelineTweet(content.itemContent)], ignored, entry.sortIndex);
         } else if (content.displayType === "VerticalConversation" && Array.isArray(content.items)) {
-          store(entry.entryId, content.items.map(i => timelineTweet(i.item?.itemContent)), ignored);
+          store(entry.entryId, content.items.map(i => timelineTweet(i.item?.itemContent)), ignored,
+            entry.sortIndex);
         }
       }
     }
@@ -126,23 +163,23 @@
 
   const originalFetch = window.fetch;
   window.fetch = function (...args) {
-    const key = listRequestKey(args[0]);
+    const request = listRequestInfo(args[0]);
     const response = originalFetch.apply(this, args);
-    if (key) response.then(r => {
-      if (r.ok) return r.clone().json().then(data => captureListResponse(key, data));
+    if (request) response.then(r => {
+      if (r.ok) return r.clone().json().then(data => captureListResponse(request, data));
     }).catch(() => {}); // Observing a response must never break X's request.
     return response;
   };
   const originalOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url, ...args) {
     const result = originalOpen.call(this, method, url, ...args);
-    const key = listRequestKey(url);
-    if (key) this.addEventListener("loadend", () => {
+    const request = listRequestInfo(url);
+    if (request) this.addEventListener("loadend", () => {
       try {
         if (this.status < 200 || this.status >= 300) return;
         const data = this.responseType === "json" ? this.response :
           !this.responseType || this.responseType === "text" ? JSON.parse(this.responseText) : null;
-        captureListResponse(key, data);
+        captureListResponse(request, data);
       } catch { /* Unsupported responses leave date lookup unavailable. */ }
     }, { once: true });
     return result;
@@ -182,29 +219,52 @@
 
   function getActiveTabKey() {
     const path = window.location.pathname;
-    const directMatch = path.match(/^\/i\/lists\/(\d+)/);
+    const directMatch = path.match(/^\/i\/lists\/(\d+)\/?$/);
+    if (!directMatch && path !== "/home" && path !== "/") {
+      // Photo, compose and tweet routes cover or briefly replace the timeline.
+      // Keep the session so returning to the same tab resumes tracking.
+      if (!suspended) suspendSession();
+      return null;
+    }
+    suspended = false;
     let key = null;
     let tabText = null;
     if (directMatch) {
       key = "list_" + directMatch[1];
-    } else if (path === "/home" || path === "/") {
-      const t = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
+    } else {
+      const selected = selectedHomeTab();
       // X can unmount the tab strip while scrolling. Missing DOM is not a tab switch.
-      if (!t && path === session.path) return session.key;
-      if (t) {
-        tabText = t.innerText.trim();
+      if (!selected && path === session.path) return session.key;
+      if (selected) {
+        const t = selected.tab;
+        tabText = selected.text;
         if (!tabText && path === session.path) return session.key;
-        if (tabText && tabText !== "For you" && tabText !== "Following") {
+        if (tabText && !selected.builtIn) {
           const href = t.getAttribute("href") || t.closest("a")?.getAttribute("href") || "";
           const listMatch = href.match(/\/i\/lists\/(\d+)/);
-          key = listMatch ? "list_" + listMatch[1] : "text_" + tabText.replace(/\s+/g, "_");
+          key = listMatch ? "list_" + listMatch[1] : homeListKeys.get(tabText) ||
+            "text_" + tabText.replace(/\s+/g, "_");
           // Keep the same storage key if a re-render adds or removes the tab's href.
           if (path === session.path && tabText === session.tabText &&
-              (!listMatch || session.key?.startsWith("text_"))) {
+              !listMatch && !homeListKeys.has(tabText)) {
             key = session.key;
           }
         }
       }
+    }
+
+    if (path === session.path && tabText === session.tabText &&
+        session.key?.startsWith("text_") && key?.startsWith("list_")) {
+      // A Home List's numeric ID became known mid-session. Rename the key in place
+      // so the reading state and a running jump survive, and keep the bookmark
+      // made under the old key unless the List already has one from idle time.
+      const legacyBookmark = localStorage.getItem(PREFIX + session.key);
+      if (legacyBookmark && (isReadingActive || !localStorage.getItem(PREFIX + key))) {
+        localStorage.setItem(PREFIX + key, legacyBookmark);
+      }
+      session.key = key;
+      lastCommittedId = localStorage.getItem(PREFIX + key);
+      return key;
     }
 
     if (path !== session.path || key !== session.key) {
@@ -225,6 +285,18 @@
       session.tabText = tabText;
     }
     return key;
+  }
+
+  function suspendSession() {
+    suspended = true;
+    clearTrackingTimers();
+    if (!jumping) return;
+    // autoSavePaused is cleared only once a jump has found its target; replacing
+    // the search identity keeps its loop and cooldown from resuming.
+    const stopped = autoSavePaused && jumpSearch;
+    jumpSearch = stopped ? { ...jumpSearch } : null;
+    jumping = false;
+    jumpStatus = stopped ? `Stopped (${jumpSearch.inspected.size}/${jumpSearch.limit}) · Continue` : "↓ Jump";
   }
 
   function isCurrentSession(expected) {
@@ -304,7 +376,7 @@
     label.textContent = notice.hidden ? status : notice.textContent;
     const counter = bar.querySelector("#x-pos-count");
     counter.textContent = count == null ? "—" : count < 1000 ? String(count)
-      : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(count).toLowerCase();
+      : compactNumber.format(count).toLowerCase();
     counter.title = jumpSearch ? `${jumpSearch.inspected.size} / ${jumpSearch.limit} inspected · ${status}`
       : count ? `Timeline #${count} · ${status}` : status;
     counter.setAttribute("aria-label", counter.title);
@@ -345,7 +417,8 @@
         coldStartTimer = setTimeout(() => {
           if (!isCurrentSession(expected) || jumping) return;
           isReadingActive = true;
-          persist(tid, expected);
+          // The page can shift during the wait; save what is on screen now.
+          persist(topId() || tid, expected);
           flash("Session Active", "#1d9bf0");
         }, COLD_START_WAIT);
       } else {
@@ -408,13 +481,19 @@
 
     const article = findArticle(lastCommittedId);
     if (article) {
-      article.scrollIntoView({ behavior: "auto", block: "center" });
+      alignToReadingLine(article, "auto");
       highlight(article);
       updateReturnButton(false);
     } else {
       // Fast jump logic: determine direction and jump aggressively
       await performJump(lastCommittedId, true);
     }
+  }
+
+  // Put the tweet where topId() reads the position, so reaching a bookmark does
+  // not make the tweet above it look like the new reading position.
+  function alignToReadingLine(article, behavior) {
+    window.scrollBy({ top: article.getBoundingClientRect().top - 100, behavior });
   }
 
   function highlight(article) {
@@ -424,11 +503,44 @@
     setTimeout(() => (article.style.backgroundColor = ""), 2500);
   }
 
+  // Reposts carry the original tweet's ID, so IDs alone can point the wrong way.
+  // Prefer the captured List order; a target X has not sent yet is further down.
+  function jumpDirection(target) {
+    if (window.scrollY <= 0) return 1;
+    const current = topId();
+    if (!current) return 1;
+    const cache = listEntries.get(session.key);
+    const order = id => {
+      const sortIndex = cache?.byTweet.get(id)?.values().next().value?.sortIndex;
+      return /^\d+$/.test(sortIndex) ? BigInt(sortIndex) : null;
+    };
+    const currentOrder = order(current);
+    if (currentOrder !== null) {
+      const targetOrder = order(target);
+      return targetOrder !== null && targetOrder > currentOrder ? -1 : 1;
+    }
+    return BigInt(target) > BigInt(current) ? -1 : 1;
+  }
+
   async function performJump(target, isFast = false) {
+    try {
+      return await runJump(target, isFast);
+    } catch (error) {
+      // An unexpected failure must not leave the controls stuck on Stop.
+      console.error("[x-pos] jump failed", error);
+      jumping = false;
+      jumpSearch = null;
+      updateJumpButton("Jump failed");
+      return false;
+    }
+  }
+
+  async function runJump(target, isFast) {
     if (!getActiveTabKey() || jumping) return false;
     const expected = session;
     const requestedDay = target.startsWith("date:") ? dateRange(target.slice(5)) : null;
     if (target.startsWith("date:") && !requestedDay) return false;
+    if (!requestedDay && !/^\d+$/.test(target)) return false;
     clearTrackingTimers();
     jumping = true;
     autoSavePaused = true;
@@ -436,9 +548,9 @@
     let search = jumpSearch;
     if (!search || search.target !== target) {
       const day = requestedDay;
-      const currentTid = topId();
-      const direction = !day && currentTid && BigInt(target) > BigInt(currentTid) ? -1 : 1;
-      search = { target, day, direction, isFast, inspected: new Set(), limit: JUMP_BATCH_SIZE };
+      const direction = day ? 1 : jumpDirection(target);
+      search = { target, day, direction, isFast, inspected: new Set(), skipped: new Set(), older: 0,
+        limit: JUMP_BATCH_SIZE };
       jumpSearch = search;
       if (day) {
         // Starting at the top makes this the day's first timeline entry, not just
@@ -452,14 +564,15 @@
 
     let found = null;
     let missingDateData = false;
-    const { direction, inspected, day } = search;
+    const { inspected, day } = search;
     const label = day ? target.slice(5) : "Searching";
     updateJumpButton(`${label}… ${inspected.size}/${search.limit}`);
     // Show Stop before waiting. A resumed date jump also lets the viewport settle,
     // but does not restart from the top.
     if (day) await new Promise(r => setTimeout(r, 600));
     isFast = search.isFast;
-    const step = day ? window.innerHeight * 0.7 : isFast ? window.innerHeight * 4 : window.innerHeight * 2;
+    // Larger steps can pass a tweet between two scans of the virtualized timeline.
+    const step = day ? window.innerHeight * 0.7 : window.innerHeight * 2;
     const delay = isFast ? 100 : 600;
     let lastProgressAt = performance.now();
     let lastScrollY = window.scrollY;
@@ -479,29 +592,31 @@
         let entryId = id;
         if (day) {
           const entry = dateEntry(article, id);
-          if (!entry) { missingDateData = true; break; }
+          if (!entry) {
+            if (search.skipped.has(id)) continue;
+            missingDateData = true;
+            break;
+          }
           if (entry.ignored || entry.primary.id !== id) continue;
           entryId = entry.entryId;
           matches = entry.primary.time >= day.start && entry.primary.time < day.end;
+          // The List is newest first: a run of older entries means the day was passed.
+          if (!inspected.has(entryId)) search.older = entry.primary.time < day.start ? search.older + 1 : 0;
         }
         inspected.add(entryId);
         // A target at the batch boundary still counts as a successful match.
         if (matches) {
-          if (day) {
-            // Align the actual reply/repost with the reading line, not its parent.
-            window.scrollBy({ top: rect.top - 100, behavior: "instant" });
-          } else {
-            article.scrollIntoView({ behavior: isFast ? "auto" : "smooth", block: "center" });
-          }
+          // Align the actual reply/repost with the reading line, not its parent.
+          alignToReadingLine(article, day ? "instant" : isFast ? "auto" : "smooth");
           highlight(article);
           found = id;
           break;
         }
-        if (inspected.size >= search.limit) break;
+        if (inspected.size >= search.limit || search.older >= JUMP_PASSED_DATE) break;
       }
 
       updateJumpButton(`${label}… ${inspected.size}/${search.limit}${missingDateData ? " · Waiting for dates" : ""}`);
-      if (found || inspected.size >= search.limit) break;
+      if (found || inspected.size >= search.limit || search.older >= JUMP_PASSED_DATE) break;
 
       const now = performance.now();
       const scrollY = window.scrollY;
@@ -509,24 +624,42 @@
         lastProgressAt = now;
       }
       lastScrollY = scrollY;
+      // One entry X never described must not block the search. With no captured
+      // data at all, keep waiting so the stall reports that dates are unavailable.
+      if (missingDateData && now - lastProgressAt >= JUMP_DATE_WAIT &&
+          listEntries.get(session.key)?.entries.size) {
+        for (const article of articles) {
+          const id = idOf(article);
+          if (id && !dateEntry(article, id)) search.skipped.add(id);
+        }
+        lastProgressAt = now;
+        continue;
+      }
+      // Reaching the top, or stalling on the way up, means the target is below.
+      if (search.direction < 0 && (scrollY <= 0 || now - lastProgressAt >= JUMP_STALL_WAIT)) {
+        search.direction = 1;
+        lastProgressAt = now;
+      }
       // Slow loading does not consume the tweet budget, but a stuck page can stop.
       if (now - lastProgressAt >= JUMP_STALL_WAIT) break;
 
       if (!missingDateData) {
-        window.scrollBy({ top: step * direction, behavior: day ? "instant" : isFast ? "auto" : "smooth" });
+        window.scrollBy({ top: step * search.direction, behavior: day ? "instant" : isFast ? "auto" : "smooth" });
       }
       await new Promise(r => setTimeout(r, delay));
     }
 
     if (!isCurrentSession(expected) || jumpSearch !== search) return false;
     if (found) autoSavePaused = false;
-    updateJumpButton(found ? "✓ Found" : inspected.size >= search.limit
-      ? `Not found (${inspected.size}) · Continue`
+    const passed = !found && search.older >= JUMP_PASSED_DATE;
+    updateJumpButton(found ? "✓ Found" : passed ? `No posts on ${label}`
+      : inspected.size >= search.limit ? `Not found (${inspected.size}) · Continue`
       : missingDateData ? "Date data unavailable · Retry"
       : `Loading stalled (${inspected.size}) · Retry`);
     setTimeout(() => {
       if (!isCurrentSession(expected) || jumpSearch !== search) return;
-      if (found) jumpSearch = null;
+      // Nothing is left to continue once the target was found or the day was passed.
+      if (found || passed) jumpSearch = null;
       jumping = false;
       updateJumpButton(found ? "↓ Jump" : jumpStatus);
       refreshLabel();
@@ -555,9 +688,10 @@
   function jumpToDate() {
     if (!getActiveTabKey() || jumping) return;
     const input = document.getElementById("x-pos-date");
+    input?.setCustomValidity("");
     if (!input?.reportValidity() || !dateRange(input.value)) return;
     if (!session.key.startsWith("list_")) {
-      input.setCustomValidity("Open this List directly so its ID can be identified.");
+      input.setCustomValidity("Reload X so this Home List's ID can be identified, or open the List directly.");
       input.reportValidity();
       return;
     }
@@ -873,6 +1007,7 @@
   }
 
   function check() {
+    const wasSuspended = suspended;
     const k = getActiveTabKey();
     if (!k) {
       if (bar) { bar.remove(); bar = null; }
@@ -881,6 +1016,8 @@
 
     build();
     if (!dismissed) refreshLabel();
+    // Re-arm tracking for the position that was on screen before the overlay opened.
+    if (wasSuspended) onScroll();
   }
 
   window.addEventListener("scroll", onScroll, { passive: true });
